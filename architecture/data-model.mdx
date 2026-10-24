@@ -1,7 +1,7 @@
 ---
 title: "Network data model: lines, stations, vehicles, and routes"
 sidebarTitle: "Data Model"
-description: "The City Metro network object is fetched once from /api/network and indexed by api.js. Understand the shape of every object: lines, stations, segments, vehicles, and trip plans."
+description: "Reference for the City Metro net object: lines, stations, segments, walk links, live vehicles, and settings constants used in arrival time calculations."
 ---
 
 The `net` object is the single source of truth for everything the map and planner render. It is fetched once per page load from `/api/network`, enriched with precomputed lookup maps and parsed geometry by `indexNetwork()` in `api.js`, and then shared by reference across every module. Live vehicle positions are layered on top by `refreshVehicles(net)` every 15 seconds, mutating `net.vehicles` in place.
@@ -91,11 +91,11 @@ Segments are the drawable, traversable edges of the transit graph. Each segment 
 | `line_id` | `string` | The line this segment belongs to. |
 | `from_station_id` | `number` | Station ID at the start of this segment. |
 | `to_station_id` | `number` | Station ID at the end of this segment. |
-| `seq_order` | `number` | Position in the line's running order. `orderedLine()` sorts by this field to reconstruct the full ordered stop list. |
-| `direction` | `'both' \| 'outbound' \| 'inbound'` | Whether trains run in both directions or only one. `orderedLine()` prefers `'both'` segments when building the stop order. |
+| `seq_order` | `number` | Position in the line's running order. `lineStops()` and `departures()` sort segments by this field to reconstruct the full ordered stop list. |
+| `direction` | `'both' \| 'outbound' \| 'inbound'` | Whether trains run in both directions or only one. The internal ordering logic prefers `'both'` segments when building the stop sequence. |
 | `points_json` | `string` | JSON-encoded array of `[x, y]` world-coordinate pairs representing the segment's path geometry. |
 | `pts` | `[number, number][]` | Parsed version of `points_json`. Added by `indexNetwork()`; used directly by the canvas renderer. |
-| `travel_seconds` | `number` | Scheduled travel time across this segment in seconds. Used by `track()` to compute arrival estimates. |
+| `travel_seconds` | `number` | Scheduled travel time across this segment in seconds. Used by `trackVehicle()` to compute arrival estimates. |
 
 ---
 

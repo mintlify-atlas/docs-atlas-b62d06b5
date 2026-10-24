@@ -1,7 +1,7 @@
 ---
 title: "Live Vehicle Tracking: real-time bus and rail arrivals"
 sidebarTitle: "Live Vehicles"
-description: "City Metro Trip Planner displays live vehicle positions refreshed every 15 seconds. Arrival countdowns use distance and speed_kmh to compute minutes to any station."
+description: "City Metro shows real-time vehicle positions refreshed every 15 seconds. ETAs use pixel distance and speed_kmh (as mph) to count minutes to any stop."
 ---
 
 City Metro surfaces real-time vehicle positions throughout the app — in nearby-service rows, station arrival boards, line screens, and the trip guide. Every 15 seconds `refreshVehicles(net)` silently replaces `net.vehicles` so all downstream functions automatically see the latest data on their next call.
@@ -28,6 +28,7 @@ The response is an array of vehicle objects. Each vehicle has the following fiel
 | `speed_kmh` | number | Reported speed (treated as mph — see note below) |
 | `headsign` | string | Destination display text |
 | `vehicle_label` | string | Human-readable vehicle number (e.g. `"42"`) |
+| `next_station_name` | string | Display name of the next station (fallback when the ID lookup fails) |
 | `last_updated` | string | ISO-ish UTC timestamp of the last GPS fix |
 | `color` | string | Optional per-vehicle override colour |
 

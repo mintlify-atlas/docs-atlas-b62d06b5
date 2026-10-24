@@ -1,7 +1,7 @@
 ---
-title: "Line Screen: stops, vehicles, alerts, and walking connections"
+title: "Line Screen: stops, live vehicles, alerts, and connections"
 sidebarTitle: "Line Screen"
-description: "The City Metro line screen shows every stop on a line with live ETAs, all vehicles currently in service, service alerts, and walking connections to nearby lines."
+description: "The City Metro line screen shows every stop with live ETAs, all vehicles in service, service alerts, and walking connections to nearby lines."
 ---
 
 The line screen is the full information panel for a single transit line. It appears inside the map page's side panel when you tap a service row, inside the trip planner as a modal overlay when you tap a line badge in the route guide, and directly via the `?line=<id>` deep link. It is self-contained — a single `renderLineScreen()` call creates and manages the whole panel.
@@ -19,8 +19,8 @@ renderLineScreen(root, opts)
 | `net` | object | ✅ | The loaded network object |
 | `lineId` | string | ✅ | ID of the line to display |
 | `stationId` | number | — | If set, shows a "Next at \<station\>" tile section above the stop list |
-| `onBack` | function | ✅ | Called when the user taps the back button |
-| `onStation` | function | ✅ | Called with a station object when the user taps a stop row |
+| `onBack` | function | — | Called when the user taps the back button (recommended; omitting makes the back button a no-op) |
+| `onStation` | function | — | Called with a station object when the user taps a stop row (recommended; omitting makes stop rows non-navigable) |
 | `onVehicle` | function | — | Called with a vehicle object when the user taps a vehicle row |
 | `onShowMap` | function | — | If provided, renders a "Show on map" button in the header |
 | `backLabel` | string | — | Label for the back button (default: `'Back'`) |
@@ -117,7 +117,7 @@ Below the pager, `extrasHtml()` renders three subsections:
 
 ### 2. Walking connections
 
-All `net.walk_links` entries for every stop on the line are collected (deduped by `[a.id, b.id].sort().join('-')`). Up to **8** connections are shown, each displaying:
+Walking connections are sourced from `net.walkFrom` — a lookup map built by `loadNetwork()` from the raw `walk_links` API data, keyed by station ID. Every stop on the line is checked against `net.walkFrom[s.id]`, and duplicate pairs are deduped by `[a.id, b.id].sort().join('-')`. Up to **8** connections are shown, each displaying:
 
 - Station A name → Station B name
 - Line badges for all lines at Station B

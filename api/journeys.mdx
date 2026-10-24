@@ -1,7 +1,7 @@
 ---
 title: "Journeys API: save and manage trips with your account"
 sidebarTitle: "Journeys"
-description: "The /api/journeys endpoints let authenticated City Metro users save, retrieve, and delete journeys. All three require a Bearer token in the Authorization header."
+description: "The /api/journeys endpoints let signed-in users save, retrieve, and delete trips across devices. All require a Bearer token in the Authorization header."
 ---
 
 The Journeys API lets signed-in City Metro users persist their favourite trips across devices. A saved journey records two station IDs and two display names — enough to relaunch the planner directly from a tapped row. All three endpoints share the same base path (`/api/journeys`) and all three require the caller to present a valid Bearer token.

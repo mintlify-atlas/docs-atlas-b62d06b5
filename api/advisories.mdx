@@ -1,7 +1,7 @@
 ---
 title: "GET /api/advisories — service alerts for a transit line"
-sidebarTitle: "GET /api/advisories"
-description: "GET /api/advisories returns active service alerts for a specific City Metro line. Displayed in the line screen's Service Alerts section. No authentication required."
+sidebarTitle: "Advisories"
+description: "GET /api/advisories returns active service alerts for a City Metro line. Shown in the line screen's Service Alerts section. No authentication required."
 ---
 
 `GET /api/advisories` fetches the current list of service alerts for a given transit line. Alerts appear in the **Service Alerts** section at the bottom of every line screen, rendered as styled cards whose appearance is driven by the `severity` field. When there are no active alerts the endpoint returns an empty array and the UI shows "No active alerts."

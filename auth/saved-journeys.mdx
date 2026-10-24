@@ -1,7 +1,7 @@
 ---
-title: "Save and manage journeys with a City Metro account"
+title: "Saving and Managing Journeys on City Metro Account"
 sidebarTitle: "Saved Journeys"
-description: "Signed-in riders can save trips to their City Metro account and access them across devices. Journeys are stored server-side and managed via the /api/journeys endpoint."
+description: "Signed-in riders save trips server-side and access them on any device. Manage saved journeys via GET, POST, and DELETE on the /api/journeys endpoint."
 ---
 
 Every planned trip in City Metro generates a shareable URL (`/planner.html?from=<id>&to=<id>`) that works for anyone. Signing in takes this further — your trips are saved to your account on the server, so the same list appears whether you're on your phone on the platform or on a desktop at home.
@@ -13,6 +13,7 @@ Saving journeys requires an active session. Before calling any `/api/journeys` e
 ```js
 if (!Auth.loggedIn) {
   toast('Sign in to save journeys');
+  $('#accountBtn').click(); // open the account dialog
   return;
 }
 ```
@@ -43,9 +44,10 @@ The **Save** button appears in the route guide footer after a trip has been plan
 // Save a journey after a trip is planned
 if (!Auth.loggedIn) {
   toast('Sign in to save journeys');
+  $('#accountBtn').click(); // open the account dialog
   return;
 }
-const res = await api('/api/journeys', {
+await api('/api/journeys', {
   method: 'POST',
   body: JSON.stringify({
     from_station_id: S.from.id,
@@ -64,7 +66,7 @@ The **Save this journey** button also appears on the **Journey complete** screen
 
 Tapping the City Metro logo in the navbar opens the account dialog. When the user is signed in, `renderUserView()` in `ui.js` renders the full account view:
 
-```
+```text
 ┌─────────────────────────────────┐
 │  Alex Johnson                   │
 │  alex@example.com               │
@@ -117,7 +119,7 @@ $('#signOut').onclick = () => { Auth.clear(); renderAccount(); };
 
 Every saved journey maps directly to a planner URL:
 
-```
+```text
 /planner.html?from=<from_station_id>&to=<to_station_id>
 ```
 

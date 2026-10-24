@@ -1,7 +1,7 @@
 ---
-title: "OAuth 2.0 sign-in flow with Authentik"
+title: "City Metro OAuth 2.0 Authorization Code Flow Guide"
 sidebarTitle: "OAuth Flow"
-description: "Walk through the City Metro OAuth 2.0 sign-in flow: the Worker initiates it, Authentik handles login, and auth-callback.html exchanges the code for a token."
+description: "How City Metro OAuth sign-in works: Auth.login() redirects to the Worker, Authentik handles login, and auth-callback.js exchanges the ticket for a token."
 ---
 
 City Metro Trip Planner never handles passwords. Instead it delegates authentication entirely to [Authentik](https://auth.citymetro.xyz) via a standard OAuth 2.0 Authorization Code flow. The Cloudflare Worker acts as the confidential client — holding the client secret server-side — while the browser only ever sees a short-lived ticket that it immediately exchanges for a session token.
@@ -32,7 +32,7 @@ login(returnTo = location.pathname + location.search) {
 
 The full URL looks like:
 
-```
+```text
 https://api.trip-planner.citymetro.xyz/api/auth/login
   ?site=https%3A%2F%2Ftrip-planner.citymetro.xyz
   &return=%2Fplanner.html
@@ -52,13 +52,13 @@ The browser lands at `https://auth.citymetro.xyz` where Authentik presents the s
 
 After a successful authentication, Authentik redirects back to the Worker, which exchanges the authorization code for tokens, creates a short-lived single-use ticket, and then redirects the browser to:
 
-```
+```text
 <origin>/auth-callback.html?ticket=<one-time-ticket>&return=<returnTo>
 ```
 
 For example:
 
-```
+```text
 https://trip-planner.citymetro.xyz/auth-callback.html
   ?ticket=eyJ...
   &return=%2Fplanner.html

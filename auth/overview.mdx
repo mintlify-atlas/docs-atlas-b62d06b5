@@ -1,7 +1,7 @@
 ---
-title: "Authentication in City Metro Trip Planner"
+title: "Authentication Overview for City Metro Trip Planner"
 sidebarTitle: "Overview"
-description: "City Metro Trip Planner uses OAuth 2.0 via Authentik. A Bearer token is stored in localStorage and sent in the Authorization header on every authenticated request."
+description: "City Metro uses OAuth 2.0 via Authentik. A Bearer token is stored in localStorage under cm_token and sent on every authenticated API request."
 ---
 
 City Metro Trip Planner is designed to be useful whether or not you have an account — the map, trip planner, live arrivals, and service advisories are all available anonymously. An account unlocks the ability to save journeys server-side so they're accessible across every device you travel with.
@@ -85,7 +85,7 @@ if (res.status === 401 && Auth.loggedIn && !path.startsWith('/api/auth')) Auth.c
 
 The Authentik account portal is available at:
 
-```
+```text
 https://auth.citymetro.xyz
 ```
 

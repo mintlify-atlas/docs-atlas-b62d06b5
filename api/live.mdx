@@ -1,7 +1,7 @@
 ---
-title: "GET /api/live — real-time vehicle positions"
-sidebarTitle: "GET /api/live"
-description: "GET /api/live returns the current position and status of every active vehicle in the City Metro network. No authentication required. Refresh every 15 seconds."
+title: "GET /api/live — real-time vehicle positions and status"
+sidebarTitle: "Live Vehicles"
+description: "GET /api/live returns the position and status of every active vehicle on the network. No authentication required. Poll every 15 seconds for live arrivals."
 ---
 
 `GET /api/live` returns a snapshot of every active vehicle currently on the City Metro network — position, speed, next stop, headsign, and more. The data powers the live arrival tiles shown in the trip planner detail view, the per-line vehicle board on the line screen, and the moving vehicle icons painted on the map canvas.
@@ -67,10 +67,6 @@ The endpoint returns a **JSON array** of vehicle objects. An empty array (`[]`) 
   UTC datetime string of the most recent GPS fix, in the format `"YYYY-MM-DD HH:MM:SS"` (space-separated, no timezone suffix). The client converts this to a Unix timestamp by appending `"T"` and `"Z"`: `Date.parse(v.last_updated.replace(' ', 'T') + 'Z')`. `null` when no fix has been received.
 </ResponseField>
 
-<ResponseField name="color" type="string | null">
-  An optional hex colour string that overrides the vehicle icon's default colouring. When `null`, the icon inherits the line's `color` from `/api/network`.
-</ResponseField>
-
 ## Refresh behaviour
 
 The app calls `refreshVehicles(net)` on a 15-second `setInterval` timer in `planner-page.js`. Each call replaces `net.vehicles` with the latest array, then triggers a full re-render of the live arrival tiles and vehicle icons. The timer is guarded by `document.hidden` so polling pauses automatically when the tab is backgrounded.
@@ -118,8 +114,7 @@ console.log(busVehicles.length, 'buses in service');
     "speed_kmh": 35,
     "headsign": "Pasadena",
     "vehicle_label": "Train 1042",
-    "last_updated": "2025-01-15 18:42:07",
-    "color": null
+    "last_updated": "2025-01-15 18:42:07"
   },
   {
     "id": "bus-720-3",
@@ -133,8 +128,7 @@ console.log(busVehicles.length, 'buses in service');
     "speed_kmh": 22,
     "headsign": "Santa Monica",
     "vehicle_label": "Bus 3301",
-    "last_updated": "2025-01-15 18:42:11",
-    "color": null
+    "last_updated": "2025-01-15 18:42:11"
   }
 ]
 ```

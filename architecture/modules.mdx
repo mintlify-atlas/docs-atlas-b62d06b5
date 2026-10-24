@@ -169,6 +169,7 @@ new MapView({ wrap, canvas, net, onStation, onVehicle, onEmpty, insets, showVehi
 | `fitAll()` | Fits all station coordinates. Clears `_focus`. |
 | `fitLine(id)` | Fits the segment point cloud for one line. Clears `_focus`. |
 | `fitRoute(r)` | Fits all leg point arrays in a route plan. Clears `_focus`. |
+| `fitLeg(l)` | Fits the point array for a single route leg. Clears `_focus`. Used by the trip guide to zoom into the active leg. |
 | `focusAt(x, y, scale?)` | Stores `{x, y}` as `_focus` and calls `map.centerOn`. Used for programmatic focus that should survive layout reflows. |
 | `focusStation(s, scale?)` | Sets `selectedId = s.id` and calls `focusAt(s.x, s.y, scale)`. |
 
@@ -206,16 +207,18 @@ Renders the vehicle the trip guide is currently following. The chip is larger (2
 | Export | Signature | Description |
 |---|---|---|
 | `MAX_WALK_MIN` | `20` | Maximum walking time in minutes. Services beyond this threshold are excluded from the "nearby" panel. |
-| `orderedLine(lineId, net)` | — | Sorts segments by `seq_order`; returns `{ segs, ids, first, last }` where `ids` is the ordered array of station IDs and `first`/`last` are the terminal station objects. Prefers `direction === 'both'` segments. |
-| `track(v, targetId, net)` | — | Computes `{ secs, stops, minutes }` representing how far vehicle `v` is from `targetId`. Accounts for direction of travel (the vehicle may need to reach a terminal and turn around before reaching the target). |
 | `etaMinutes(v, targetId, net)` | `(vehicle, number, net) => number \| null` | Returns the arrival estimate in whole minutes, or `null` if the vehicle has no position data. |
-| `trackVehicle(v, targetId, net)` | `(vehicle, number, net) => object \| null` | Returns the full tracking object `{ secs, stops, minutes }`, or `null`. |
+| `trackVehicle(v, targetId, net)` | `(vehicle, number, net) => object \| null` | Returns the full tracking object `{ secs, stops, minutes }` representing how far vehicle `v` is from `targetId`, or `null`. Accounts for direction of travel (the vehicle may need to reach a terminal and turn around before reaching the target). |
+| `vehicleAgeSec(v)` | `(vehicle) => number \| null` | Returns how many seconds ago the vehicle's `last_updated` timestamp was, or `null` if the field is absent or unparseable. |
 | `dirKeyOf(v, line)` | `(vehicle, { first }) => 'inbound' \| 'outbound'` | Returns `'inbound'` if the vehicle's `headsign` matches `line.first.name`; otherwise `'outbound'`. |
+| `dirKeyFor(lineId, headsign, net)` | `(string, string, net) => 'inbound' \| 'outbound'` | Like `dirKeyOf` but looks up the line's terminals from `net` by `lineId`. Used by the trip planner when only a headsign string is available. |
 | `vehiclesTo(stationId, lineId, dirKey, net)` | — | Returns all vehicles on `lineId` heading in `dirKey` toward `stationId`, sorted by `secs` ascending. |
 | `departures(stationId, lineId, net)` | — | Returns `[{ key, headsign, destId, vehicles, etas }]` — one entry per direction, filtered to exclude the direction whose destination is the station itself. `etas` contains up to four ETA values in minutes. |
-| `nearbyServices(pin, net, maxStations?)` | — | Returns the best service per line+direction within `MAX_WALK_MIN` minutes' walk of `pin`. Deduplicates by `lineId|dirKey` key, keeping the nearest station. Sorted by distance then by first ETA. |
+| `terminals(lineId, net)` | `(string, net) => { first, last }` | Returns the first and last terminal station objects for a line. Returns `{ first: null, last: null }` when the line has no segments. |
+| `trackedVehicle(leg, net)` | — | Returns the soonest vehicle that will reach `leg.from` on the correct direction, plus `{ v, minutes, stops, nextName, atStop, ageSec }`. Used by the trip guide to track the approach of the next vehicle. Returns `null` if no vehicle is found. |
+| `nearbyServices(pin, net, maxStations?)` | — | Returns the best service per line+direction within `MAX_WALK_MIN` minutes' walk of `pin`. Deduplicates by `lineId\|dirKey` key, keeping the nearest station. Sorted by distance then by first ETA. |
 | `stationBoard(stationId, net)` | — | Returns `[{ line, dirs }]` for all lines calling at a station. Each `dirs` entry is the output of `departures`. |
-| `lineStops(lineId, net)` | — | Returns the ordered array of station objects for a line, using `orderedLine`. |
+| `lineStops(lineId, net)` | — | Returns the ordered array of station objects for a line, sorted by `seq_order`. |
 | `walkMinutes(distPx, net)` | `(number, net) => number` | Converts a pixel distance to walking minutes using `net.settings.px_per_mile` and `net.settings.walk_mph`. |
 | `nearestStation(p, net)` | — | Returns `{ station, dist }` for the nearest station by Euclidean pixel distance. |
 | `nearestStreet(p, net, maxPx?)` | — | Returns the name of the nearest street polyline within `maxPx` pixels (default 45), or `null`. |
@@ -381,6 +384,14 @@ export function updatedSeconds(id)
 ```
 
 Returns the current value of the cosmetic "updated ago" counter for a vehicle. Each vehicle gets its own counter that counts up from 0 each second and resets to 0 at a random point between 30 and 90 seconds. A single `setInterval` ticker drives all counters and updates any `[data-upd="id"]` elements in the DOM.
+
+#### `tickUpdated()`
+
+```js
+export function tickUpdated()
+```
+
+Advances every active vehicle counter by one second and updates all `[data-upd]` DOM elements with the new "N seconds ago" text. Called internally by the `setInterval` that starts on the first `updatedSeconds()` call. Exported so that tests and external callers can drive the counter manually without relying on real time.
 
 #### `headsignOf(v, first, last)`
 

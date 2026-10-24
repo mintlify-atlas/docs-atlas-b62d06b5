@@ -1,7 +1,7 @@
 ---
-title: "Application settings in config.js"
+title: "Client-side configuration reference for City Metro config.js"
 sidebarTitle: "App Settings"
-description: "All client-side configuration for City Metro Trip Planner lives in config.js. Change API_BASE, VEHICLE_ICONS, MODES, SHOW_LIVE_ON_MAP, and AUTH_ORIGIN here."
+description: "All client-side constants for City Metro Trip Planner live in config.js. Edit API_BASE, VEHICLE_ICONS, MODES, SHOW_LIVE_ON_MAP, and AUTH_ORIGIN here."
 ---
 
 `config.js` is the single source of truth for every client-side constant in the City Metro Trip Planner. Rather than scattering magic strings across the codebase, every module that needs the API address, icon paths, route modes, or auth URL imports from this one file. To change how the front-end behaves — in development, staging, or production — this is the only file you need to edit.

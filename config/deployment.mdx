@@ -1,7 +1,7 @@
 ---
-title: "Deploying and configuring Cloudflare Workers"
+title: "Deploying City Metro Trip Planner to Cloudflare Workers"
 sidebarTitle: "Cloudflare Deploy"
-description: "City Metro Trip Planner deploys as Cloudflare Workers static assets via wrangler.toml. Covers local dev, production deploy, URL routing, and environment configuration."
+description: "City Metro Trip Planner runs as Cloudflare Workers static assets. Learn how to configure wrangler.toml, run local dev, and push a production deployment."
 ---
 
 City Metro Trip Planner is deployed as a Cloudflare Workers static-asset site. The entire `pages/` directory is uploaded to the Workers static asset store, and Cloudflare's edge network serves files directly — no origin server is involved for the front-end. The deployment is defined entirely in `wrangler.toml` at the project root, and managed with the [Wrangler CLI](https://developers.cloudflare.com/workers/wrangler/).

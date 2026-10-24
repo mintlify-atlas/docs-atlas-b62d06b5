@@ -1,7 +1,7 @@
 ---
 title: "Architecture overview: how City Metro Trip Planner works"
 sidebarTitle: "Overview"
-description: "City Metro Trip Planner is a static ES-module app served from Cloudflare Workers. Two entry points share a network data singleton, a canvas renderer, and a live-vehicle refresh loop."
+description: "City Metro Trip Planner: static ES modules on Cloudflare Workers, a shared network data singleton, Canvas renderer, and a live vehicle refresh loop."
 ---
 
 City Metro Trip Planner is a framework-free web application built entirely from vanilla JavaScript ES modules, HTML Canvas, and CSS custom properties. Cloudflare Workers serves every asset as a static file — there is no server-side rendering, no build step, and no JavaScript framework. Two HTML pages share a common set of modules for network data, map rendering, arrival calculations, and UI components.
@@ -104,7 +104,7 @@ The map is drawn entirely with the HTML Canvas 2D API. There is no SVG, no WebGL
 
 ## Backend
 
-All API calls target a separate service at `https://api.trip-planner.citymetro.xyz` (the `API_BASE` constant in `config.js`). The front-end never knows or cares about the backend's implementation — it calls endpoints over HTTPS and receives JSON. Authentication uses a Bearer token stored in `localStorage`; the OAuth flow is handled server-side at `https://auth.citymetro.xyz`.
+All API calls target a separate service at `https://api.trip-planner.citymetro.xyz` (the `API_BASE` constant in `config.js`). The front-end never knows or cares about the backend's implementation — it calls endpoints over HTTPS and receives JSON. Authentication uses a Bearer token stored in `localStorage`; the OAuth flow starts by redirecting to `${API_BASE}/api/auth/login`. The separate `AUTH_ORIGIN` constant (`https://auth.citymetro.xyz`) is used only for the "Manage account" external link in the account dialog.
 
 ## Module dependency graph
 

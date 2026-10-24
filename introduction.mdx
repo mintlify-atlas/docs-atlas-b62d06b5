@@ -1,7 +1,7 @@
 ---
 title: "City Metro Trip Planner: mobile-first transit planning"
 sidebarTitle: "Introduction"
-description: "City Metro Trip Planner is a canvas-based transit web app that shows live vehicles, plans multi-leg routes, and saves journeys — deployed on Cloudflare Workers."
+description: "City Metro Trip Planner is a canvas-based transit web app — live vehicles, multi-leg route planning, and journey saving — deployed on Cloudflare Workers."
 ---
 
 City Metro Trip Planner is a fully deployed, production web application for the City Metro transit network. It gives riders an interactive canvas map of the entire network, real-time vehicle positions, step-by-step multi-leg journey planning, and the ability to save trips to their account — all from a mobile-first UI that ships as a zero-dependency static site on Cloudflare Workers.
@@ -71,7 +71,7 @@ export const Auth = {
 };
 ```
 
-`Auth.login()` starts an OAuth flow through `API_BASE + /api/auth/login`, which redirects back to `/auth-callback.html` after a successful sign-in. `Auth.clear()` is called automatically when the API returns a `401` on an already-authenticated request (expired session).
+`Auth.login()` starts an OAuth flow through `API_BASE + /api/auth/login`, which redirects back to `/auth-callback` after a successful sign-in. `Auth.clear()` is called automatically when the API returns a `401` on an already-authenticated request (expired session).
 
 Every network call goes through the `api()` wrapper, which attaches the Bearer token when present, throws a human-readable error on failure, and deserialises JSON automatically:
 

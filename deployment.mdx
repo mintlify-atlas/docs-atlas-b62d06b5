@@ -1,7 +1,7 @@
 ---
 title: "Deploy City Metro Trip Planner to Cloudflare Workers"
 sidebarTitle: "Deployment"
-description: "Deploy the City Metro Trip Planner as a Cloudflare Workers static site using wrangler deploy. Covers wrangler.toml configuration and the pages/ asset directory."
+description: "Deploy the City Metro Trip Planner as a Cloudflare Workers static site. Covers wrangler.toml configuration and pages/ asset directory mapping."
 ---
 
 City Metro Trip Planner deploys as a Cloudflare Workers static site — Wrangler uploads every file inside `pages/` to Cloudflare's network and a lightweight Worker serves them from the edge. Because the app is entirely client-side HTML, CSS, and ES modules with no server-side logic, the deployment is a single command with zero runtime configuration.
