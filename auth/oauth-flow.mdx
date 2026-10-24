@@ -1,0 +1,150 @@
+---
+title: "OAuth 2.0 sign-in flow with Authentik"
+sidebarTitle: "OAuth Flow"
+description: "Walk through the City Metro OAuth 2.0 sign-in flow: the Worker initiates it, Authentik handles login, and auth-callback.html exchanges the code for a token."
+---
+
+City Metro Trip Planner never handles passwords. Instead it delegates authentication entirely to [Authentik](https://auth.citymetro.xyz) via a standard OAuth 2.0 Authorization Code flow. The Cloudflare Worker acts as the confidential client — holding the client secret server-side — while the browser only ever sees a short-lived ticket that it immediately exchanges for a session token.
+
+## Sign-in walkthrough
+
+<Steps>
+
+### User clicks "Sign in with City Metro"
+
+Tapping the account button (the City Metro logo in the navbar) opens the account dialog. If the user is not signed in, the dialog renders a **Sign in with City Metro** button whose `onclick` handler calls `Auth.login()`:
+
+```js
+$('#ssoBtn').onclick = () => Auth.login();
+```
+
+`Auth.login(returnTo)` accepts an optional `returnTo` path. When called without arguments it defaults to `location.pathname + location.search`, so the user lands back on whichever page and query string they were on before signing in.
+
+### Browser redirects to the Worker's auth initiation endpoint
+
+`Auth.login()` constructs a redirect URL and immediately navigates the browser there:
+
+```js
+login(returnTo = location.pathname + location.search) {
+  location.href = `${API_BASE}/api/auth/login?site=${encodeURIComponent(location.origin)}&return=${encodeURIComponent(returnTo)}`;
+}
+```
+
+The full URL looks like:
+
+```
+https://api.trip-planner.citymetro.xyz/api/auth/login
+  ?site=https%3A%2F%2Ftrip-planner.citymetro.xyz
+  &return=%2Fplanner.html
+```
+
+The `site` parameter tells the Worker which origin to redirect the browser back to once authentication completes. The `return` parameter carries the deep-link path for the final redirect.
+
+### The Worker redirects the user to the Authentik authorization endpoint
+
+The Worker receives the `GET /api/auth/login` request, generates a PKCE code challenge and a state value (tied to the `site` and `return` parameters), and issues a `302` redirect to the Authentik authorization endpoint at `https://auth.citymetro.xyz`. The client secret never leaves the Worker.
+
+### User authenticates at Authentik
+
+The browser lands at `https://auth.citymetro.xyz` where Authentik presents the sign-in form. The user enters their City Metro account credentials. Multi-factor authentication (if configured on the account) is handled entirely by Authentik at this stage.
+
+### Authentik redirects back to `auth-callback.html` with a ticket
+
+After a successful authentication, Authentik redirects back to the Worker, which exchanges the authorization code for tokens, creates a short-lived single-use ticket, and then redirects the browser to:
+
+```
+<origin>/auth-callback.html?ticket=<one-time-ticket>&return=<returnTo>
+```
+
+For example:
+
+```
+https://trip-planner.citymetro.xyz/auth-callback.html
+  ?ticket=eyJ...
+  &return=%2Fplanner.html
+```
+
+### `auth-callback.js` exchanges the ticket for a session token
+
+`auth-callback.html` renders a spinner and **"Signing you in…"** heading while the JavaScript exchange runs. `auth-callback.js` reads the ticket from the query string and immediately strips it from the address bar (`history.replaceState`) so it can't be bookmarked or leak in the browser history:
+
+```js
+const q = new URLSearchParams(location.search);
+history.replaceState(null, '', location.pathname); // remove the ticket from the URL
+
+const ticket = q.get('ticket');
+const data = await api('/api/auth/exchange', {
+  method: 'POST',
+  body: JSON.stringify({ ticket })
+});
+```
+
+The Worker validates the ticket (single-use, short TTL) and responds with `{ token, user }`.
+
+### `Auth.set(token, user)` stores credentials in `localStorage`
+
+Once the Worker responds successfully, the callback page calls `Auth.set()` to persist the session, updates the heading to greet the user by name, and then navigates them to their destination:
+
+```js
+Auth.set(data.token, data.user);
+$('cbTitle').textContent = `Welcome, ${data.user.name}`;
+$('cbMsg').textContent = 'Taking you back…';
+location.replace(ret);    // navigate to the original returnTo path
+```
+
+`location.replace()` is used instead of `location.href` so the callback page itself is removed from the browser history — the back button skips straight past it.
+
+### User arrives at their destination, signed in
+
+The browser navigates to the `returnTo` path (e.g. `/planner.html`). `Auth.loggedIn` is now `true`. The account dialog will show the user's name, email, and saved journeys on next open.
+
+</Steps>
+
+## The `auth-callback.html` page
+
+The callback page is intentionally minimal. While the exchange is in progress it shows:
+
+- The City Metro logo
+- A CSS spinner (`<div class="spinner">`)
+- The heading **"Signing you in…"**
+- A live-region `<p role="status">` for status messages
+
+If the Worker returns an `?error=…` query parameter (for example, if the user denied the OAuth request), or if the ticket is missing or already used, `auth-callback.js` calls `fail(message)` which:
+
+1. Hides the spinner
+2. Updates the heading to **"Couldn't sign you in"**
+3. Shows a **Try again** button that calls `Auth.login(ret)` to restart the flow
+4. Shows a **Back to the map** link as a fallback
+
+```js
+function fail(message) {
+  $('cbSpin').hidden = true;
+  $('cbTitle').textContent = "Couldn't sign you in";
+  $('cbMsg').textContent = message || 'Something went wrong. Please try again.';
+  $('cbActions').hidden = false;
+  $('cbRetry').onclick = () => Auth.login(ret);
+}
+```
+
+## Why the Worker proxies the exchange
+
+The OAuth client secret is never sent to the browser. The entire authorization code → token exchange happens inside the Cloudflare Worker. The browser only ever receives a short-lived, single-use ticket scoped to one specific origin, which it then exchanges for a City Metro session token via `POST /api/auth/exchange`. This means:
+
+- The Authentik client secret is never exposed in JavaScript bundles or network responses visible to the browser.
+- The ticket cannot be reused — replaying it after the first exchange returns an error.
+- The session token the browser stores is a City Metro–issued token, not the raw Authentik access token.
+
+<Warning>
+  The `returnTo` value accepted by `Auth.login()` and passed through the flow **must be a same-origin path** (starting with `/` and not `//` or `\`). `auth-callback.js` enforces this with a `safeReturn` guard:
+
+  ```js
+  const safeReturn = p =>
+    (typeof p === 'string' && /^\\/(?![\\/\\\\])/.test(p) && p !== '/' ? p : '/index.html');
+  ```
+
+  Any value that fails the check is silently replaced with `/index.html`. Never construct a `returnTo` value from unvalidated user input — doing so could allow an open-redirect attack that sends users to a third-party site after sign-in.
+</Warning>
+
+<Note>
+  When a session expires mid-use, `api()` calls `Auth.clear()` automatically on any `401` response. The account dialog re-renders the sign-in form without requiring a page reload. The user can tap **Sign in with City Metro** again and the full OAuth flow restarts — they'll land back on the same page they were on, already signed in.
+</Note>

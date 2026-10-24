@@ -1,0 +1,201 @@
+---
+title: "Line Screen: stops, vehicles, alerts, and walking connections"
+sidebarTitle: "Line Screen"
+description: "The City Metro line screen shows every stop on a line with live ETAs, all vehicles currently in service, service alerts, and walking connections to nearby lines."
+---
+
+The line screen is the full information panel for a single transit line. It appears inside the map page's side panel when you tap a service row, inside the trip planner as a modal overlay when you tap a line badge in the route guide, and directly via the `?line=<id>` deep link. It is self-contained — a single `renderLineScreen()` call creates and manages the whole panel.
+
+## API
+
+```js
+renderLineScreen(root, opts)
+```
+
+`root` is any DOM element that will be used as the render target. `opts` accepts:
+
+| Option | Type | Required | Description |
+|---|---|---|---|
+| `net` | object | ✅ | The loaded network object |
+| `lineId` | string | ✅ | ID of the line to display |
+| `stationId` | number | — | If set, shows a "Next at \<station\>" tile section above the stop list |
+| `onBack` | function | ✅ | Called when the user taps the back button |
+| `onStation` | function | ✅ | Called with a station object when the user taps a stop row |
+| `onVehicle` | function | — | Called with a vehicle object when the user taps a vehicle row |
+| `onShowMap` | function | — | If provided, renders a "Show on map" button in the header |
+| `backLabel` | string | — | Label for the back button (default: `'Back'`) |
+
+`renderLineScreen` returns a controller object with two methods:
+
+```js
+const lineCtl = renderLineScreen(root, opts);
+
+// Re-renders the pager items and extras section — called every 15 seconds
+lineCtl.refresh();
+
+// Stops any future renders (sets alive = false)
+lineCtl.destroy();
+```
+
+### Calling `renderLineScreen` programmatically
+
+```js
+import { renderLineScreen } from './linescreen.js';
+
+const container = document.getElementById('myPanel');
+
+const lineCtl = renderLineScreen(container, {
+  net,
+  lineId: 'blue',
+  stationId: 42,               // optional: highlight this stop and show its ETAs
+  backLabel: 'Close',
+  onBack:      () => container.hidden = true,
+  onStation:   s  => console.log('Tapped stop:', s.name),
+  onVehicle:   v  => console.log('Tapped vehicle:', v.id),
+  onShowMap:   () => view.fitLine('blue')
+});
+
+// Later, when you're done with it:
+lineCtl.destroy();
+```
+
+## Line header
+
+The top section of the line screen always shows:
+
+- **Back button** labelled with `backLabel`
+- **Line badge** — `lineBadge(line, 'xxl')` (image or colour chip)
+- **Line name** as an `<h2>`
+- **Type and metadata** — `'Rail'` or `'Bus'`, frequency (if set), and description (if set), separated by ` · `
+- **"Show on map"** button (only if `onShowMap` is provided)
+- **"Plan trip from \<station\>"** link to `planner.html?from=<stationId>` (only if `stationId` is set)
+
+## Outbound / Inbound panes
+
+The pager is built from the `items()` function, which derives the two directions from `terminals(lineId, net)`:
+
+- **Outbound** — toward `last` station; sub-label `"to <last.name>"`
+- **Inbound** — toward `first` station; sub-label `"to <first.name>"`. This pane is omitted when the line has only one terminal (i.e. `first.id === last.id`).
+
+Each pane is labelled with the direction name and `"toward <terminal name>"`.
+
+### Stop list with live ETAs
+
+Every stop on the line is listed in running order (reversed for inbound). Each stop row:
+
+- Shows the stop name
+- Shows the first vehicle's ETA in minutes for that direction (from `departures(s.id, lineId, net).find(x => x.key === key).etas[0]`)
+- Highlights the current stop when `stationId` matches
+- Is tappable — calls `onStation(station)`
+
+### "Next at \<station\>" tiles
+
+When `stationId` is set, a tile section appears above the stop list in the active pane:
+
+```
+<h4>Next at Central Park</h4>
+<div class="tiles">
+  <div class="tile first">🚌 <b>3</b> minutes</div>
+  <div class="tile">    <b>11</b> minutes</div>
+  …
+</div>
+```
+
+Each tile comes from `departures(station.id, lineId, net).find(x => x.key === key).etas`. If there are no vehicles in service, a "No vehicles in service right now" message is shown instead.
+
+## Extras section
+
+Below the pager, `extrasHtml()` renders three subsections:
+
+### 1. Live vehicles on this line
+
+`vehicleRows(net, lineId, stationId)` renders one tappable button per vehicle currently on the line. Each row shows:
+
+- Live icon (bus or rail type)
+- Vehicle label (e.g. "Bus 42") and headsign with next stop name
+- Minutes to `stationId` if set, otherwise minutes to the vehicle's own next station
+
+### 2. Walking connections
+
+All `net.walk_links` entries for every stop on the line are collected (deduped by `[a.id, b.id].sort().join('-')`). Up to **8** connections are shown, each displaying:
+
+- Station A name → Station B name
+- Line badges for all lines at Station B
+- Walk duration and distance (`fmtMin(w.seconds)` and `fmtMiles(w.miles)`)
+
+```
+Downtown Hub → Civic Centre   [Red] [Green]   4 min walk · 0.2 mi
+```
+
+### 3. Service alerts
+
+Service alerts are fetched asynchronously on mount from:
+
+```
+GET /api/advisories?line_id=<lineId>
+```
+
+Each alert in the response is rendered as:
+
+```html
+<div class="adv <severity>">
+  <strong>Alert title</strong>
+  <p>Alert body text</p>
+</div>
+```
+
+The `severity` string becomes a CSS class directly, so stylesheets can colour different severity levels independently (e.g. `warning`, `critical`, `info`).
+
+<Note>
+  Service alerts are fetched **once per mount**. The `refresh()` method re-renders the pager items and extras HTML, but the alerts `Promise` from `api('/api/advisories?…')` is only fired during the initial `renderLineScreen` call. The `#lsAlerts` DOM node is updated in place when the Promise resolves — so a slow network will show "No active alerts." briefly before the real alerts appear.
+</Note>
+
+## Lifecycle: `refresh()` and `destroy()`
+
+<Steps>
+  <Step title="Mount">
+    `renderLineScreen` writes the full HTML into `root`, wires up event listeners, constructs the `Pager`, and fires the advisories fetch.
+  </Step>
+  <Step title="Refresh (every 15 s)">
+    The caller invokes `lineCtl.refresh()`. This calls `pager.update(items())` (which re-computes all stop ETAs with fresh `net.vehicles` data) and replaces `#lsExtras` innerHTML with a new `extrasHtml()` call. `bind()` is called afterwards to re-attach vehicle and station tap handlers.
+  </Step>
+  <Step title="Destroy">
+    `lineCtl.destroy()` sets the internal `alive` flag to `false`. Any in-flight advisories fetch will silently discard its result, and any future `refresh()` call is a no-op.
+  </Step>
+</Steps>
+
+## Full panel structure
+
+```
+┌─ ls-head (coloured with line.color) ──────────────────────┐
+│  ← Nearby    [Line badge]  Line Name                       │
+│  Rail · Every 10 min · Express service                     │
+│  [Show on map]  [Plan trip from Central Park]              │
+└────────────────────────────────────────────────────────────┘
+┌─ Pager (Outbound / Inbound) ──────────────────────────────┐
+│  → Toward Riverside Terminal                               │
+│                                                            │
+│  Next at Central Park                                      │
+│  [🚌 3 min]  [11 min]  [24 min]                           │
+│                                                            │
+│  Stops                                                     │
+│  • Union Station          3 min                           │
+│  • City Hall              7 min                           │
+│  • ● Central Park ←                                       │
+│  • Riverside Terminal                                      │
+└────────────────────────────────────────────────────────────┘
+┌─ Extras ──────────────────────────────────────────────────┐
+│  Live vehicles on this line                                │
+│  [🚌 Bus 42 → Riverside · next stop City Hall  7 min →]  │
+│                                                            │
+│  Walking connections                                       │
+│  Downtown Hub → Civic Centre   [Red] [Green]  4 min walk  │
+│                                                            │
+│  Service alerts                                            │
+│  ⚠ Delays on Blue Line · Minor delays expected …         │
+└────────────────────────────────────────────────────────────┘
+```
+
+<Warning>
+  If `lineId` is not found in `net.linesById`, `renderLineScreen` renders a "Line not found." message and returns a no-op controller. Always validate the line ID before calling `renderLineScreen` in application code.
+</Warning>

@@ -1,0 +1,205 @@
+---
+title: "Network data model: lines, stations, vehicles, and routes"
+sidebarTitle: "Data Model"
+description: "The City Metro network object is fetched once from /api/network and indexed by api.js. Understand the shape of every object: lines, stations, segments, vehicles, and trip plans."
+---
+
+The `net` object is the single source of truth for everything the map and planner render. It is fetched once per page load from `/api/network`, enriched with precomputed lookup maps and parsed geometry by `indexNetwork()` in `api.js`, and then shared by reference across every module. Live vehicle positions are layered on top by `refreshVehicles(net)` every 15 seconds, mutating `net.vehicles` in place.
+
+## Using `net` in code
+
+```js
+import { loadNetwork } from './js/api.js';
+const net = await loadNetwork();
+
+// Lookup a line
+const lineA = net.linesById['A'];
+
+// Find a station by name
+const unionStation = net.stations.find(s => /union/i.test(s.name));
+
+// Get all vehicles on the A line
+const aLineVehicles = (net.vehicles || []).filter(v => v.line_id === 'A');
+```
+
+---
+
+## Network object (`net`)
+
+After `indexNetwork()` processes the raw `/api/network` response, `net` contains the following top-level properties:
+
+| Property | Type | Source | Description |
+|---|---|---|---|
+| `net.lines` | `Line[]` | Raw response | All transit lines. |
+| `net.stations` | `Station[]` | Raw response | All stations and stops, with `lineIds` added by `indexNetwork()`. |
+| `net.segments` | `Segment[]` | Raw response | Route geometry connecting stations, with `pts` added by `indexNetwork()`. |
+| `net.streets` | `Street[]` | Raw response | Background street polylines, with `pts` added by `indexNetwork()`. |
+| `net.walk_links` | `WalkLink[]` | Raw response | Bidirectional walking connections between nearby stations. |
+| `net.settings` | `Settings` | Raw response | Scale and timing constants. |
+| `net.linesById` | `{ [id]: Line }` | Added by `indexNetwork()` | O(1) line lookup by ID. |
+| `net.stationsById` | `{ [id]: Station }` | Added by `indexNetwork()` | O(1) station lookup by numeric ID. |
+| `net.segsByLine` | `{ [line_id]: Segment[] }` | Added by `indexNetwork()` | All segments for a given line, used for rendering and arrival ordering. |
+| `net.walkFrom` | `{ [station_id]: WalkNeighbour[] }` | Added by `indexNetwork()` | Adjacency list for the walking graph. Each entry is `{ id, seconds, miles }` pointing to the other end of a walk link. |
+| `net.vehicles` | `Vehicle[]` | Set by `refreshVehicles()` | Live vehicle positions. `undefined` before the first refresh; may be an empty array if no vehicles are in service. |
+
+---
+
+## Line object
+
+Lines represent individual transit routes — a named service with a colour, type, and optional badge image.
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | `string` | Short identifier used throughout the app (e.g. `"A"`, `"720"`). Used as the key in `net.linesById`. |
+| `name` | `string` | Full display name (e.g. `"A Line"`, `"Route 720"`). |
+| `type` | `'rail' \| 'bus'` | Determines which vehicle icon set is used and how the line is styled on the map. |
+| `color` | `string` | Hex CSS colour for the line (e.g. `"#2563EB"`). Used for map segments, badges, and route overlays. |
+| `text_color` | `string` | Hex CSS colour for text rendered over `color` (e.g. `"#ffffff"`). |
+| `image_url` | `string \| null` | URL of a custom badge image. When set, `lineBadge()` renders the image instead of the coloured text badge. |
+| `frequency` | `string \| null` | Human-readable schedule description (e.g. `"Every 10 min"`). Displayed in the line screen header. |
+| `description` | `string \| null` | Optional descriptive text shown in the line screen header. |
+
+---
+
+## Station object
+
+Stations represent every stop and interchange point in the network. The `type` field drives both visual size on the map and the label shown in station popups.
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | `number` | Numeric primary key. Used as the key in `net.stationsById`. |
+| `name` | `string` | Display name (e.g. `"Union Station"`). |
+| `type` | `'hub' \| 'station' \| 'stop'` | `hub` = major interchange (largest dot); `station` = rail stop (medium dot); `stop` = bus stop (smallest dot). |
+| `x` | `number` | World coordinate (horizontal). The map canvas uses these directly. |
+| `y` | `number` | World coordinate (vertical). |
+| `street` | `string \| null` | Street address or cross-street, shown in the station popup. |
+| `line_ids` | `string` | Comma-separated list of line IDs (raw from the API). |
+| `lineIds` | `string[]` | Parsed array of line IDs. Added by `indexNetwork()` from `line_ids`. |
+
+<Note>
+  Always use `station.lineIds` (the array) rather than `station.line_ids` (the raw comma-separated string). `lineIds` is added by `indexNetwork()` and is guaranteed to be a clean array with empty strings filtered out.
+</Note>
+
+---
+
+## Segment object
+
+Segments are the drawable, traversable edges of the transit graph. Each segment connects two adjacent stations on one line in one direction, with explicit geometry for the canvas renderer.
+
+| Field | Type | Description |
+|---|---|---|
+| `line_id` | `string` | The line this segment belongs to. |
+| `from_station_id` | `number` | Station ID at the start of this segment. |
+| `to_station_id` | `number` | Station ID at the end of this segment. |
+| `seq_order` | `number` | Position in the line's running order. `orderedLine()` sorts by this field to reconstruct the full ordered stop list. |
+| `direction` | `'both' \| 'outbound' \| 'inbound'` | Whether trains run in both directions or only one. `orderedLine()` prefers `'both'` segments when building the stop order. |
+| `points_json` | `string` | JSON-encoded array of `[x, y]` world-coordinate pairs representing the segment's path geometry. |
+| `pts` | `[number, number][]` | Parsed version of `points_json`. Added by `indexNetwork()`; used directly by the canvas renderer. |
+| `travel_seconds` | `number` | Scheduled travel time across this segment in seconds. Used by `track()` to compute arrival estimates. |
+
+---
+
+## Vehicle object (from `/api/live`)
+
+Vehicle objects represent the real-time state of a single transit vehicle. They are set on `net.vehicles` by `refreshVehicles(net)` every 15 seconds.
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | `number \| string` | Unique vehicle identifier. Used as the key in the `updatedSeconds` counter map and for vehicle sheet deduplication. |
+| `line_id` | `string` | The line this vehicle is currently serving. |
+| `x` | `number` | Current world coordinate (horizontal). |
+| `y` | `number` | Current world coordinate (vertical). |
+| `next_station_id` | `number \| null` | ID of the next station this vehicle is heading toward. Used by `track()` as the starting point for arrival calculations. |
+| `next_station_name` | `string \| null` | Display name of the next station. Used as a fallback when `next_station_id` cannot be resolved via `net.stationsById`. |
+| `next_x` | `number \| null` | World x-coordinate of the next station. Used to compute distance to next stop for arrival time. |
+| `next_y` | `number \| null` | World y-coordinate of the next station. |
+| `speed_kmh` | `number` | Vehicle speed. Despite the field name, this value is **treated as mph** throughout the app, matching the behaviour of the original site. |
+| `headsign` | `string \| null` | Destination headsign text. `dirKeyOf()` compares this against the line's first terminal name to determine direction. |
+| `vehicle_label` | `string \| null` | Vehicle identifier label, displayed as `"Bus 1234"` or `"Train 5678"` in the vehicle sheet and vehicle rows. |
+| `last_updated` | `string \| null` | UTC datetime string for the last GPS fix. Parsed as `"YYYY-MM-DD HH:MM:SS"` (the space is replaced with `T` before `Date.parse`). |
+| `color` | `string \| null` | Optional vehicle-level colour override. Falls back to the line's `color` when null. |
+
+### "At stop" detection
+
+A vehicle is considered to be **at its next stop** (rather than en route to it) when both `next_x` and `next_y` are non-null and the Euclidean pixel distance between the vehicle's position and the next station's position is **6 px or less**:
+
+```js
+const atStop = v.next_x != null && Math.hypot(v.next_x - v.x, v.next_y - v.y) <= 6;
+```
+
+The vehicle sheet displays `"At stop"` instead of `"Next stop"` in this case.
+
+---
+
+## Trip plan response (from `/api/plan`)
+
+The planner fetches `/api/plan?from_station=ID&to_station=ID` and receives one route per routing mode. The response shape is:
+
+```json
+{
+  "routes": {
+    "fastest":           { ... },
+    "fewest_transfers":  { ... },
+    "fewest_walking":    { ... }
+  },
+  "lines": {
+    "A": { "id": "A", "name": "A Line", "color": "#2563EB", ... }
+  }
+}
+```
+
+### Route object
+
+Each `routes[modeId]` entry:
+
+| Field | Type | Description |
+|---|---|---|
+| `found` | `boolean` | `false` when no route exists between the two stations. All other fields may be absent. |
+| `totalSeconds` | `number` | Total journey time in seconds, including rides, walks, and transfer penalties. |
+| `walkSeconds` | `number` | Total walking time in seconds across all walk legs. |
+| `transfers` | `number` | Number of transfers required. |
+| `same_as` | `string \| null` | If this route is identical to the route for another mode, this field contains that mode's ID. The planner displays a note instead of duplicating the card. |
+| `legs` | `Leg[]` | Ordered array of journey legs. |
+
+### Leg object
+
+| Field | Type | Description |
+|---|---|---|
+| `type` | `'ride' \| 'walk'` | Determines which fields are present. |
+| `line_id` | `string` | (ride only) The line to board. |
+| `headsign` | `string` | (ride only) The direction headsign for this ride. |
+| `from` | `{ id, name, x, y }` | Boarding or walk-start station. |
+| `to` | `{ id, name, x, y }` | Alighting or walk-end station. |
+| `stops` | `Station[]` | (ride only) All stations on this ride, including `from` and `to`. Used for the stop-count summary and the expandable stop list. |
+| `seconds` | `number` | Duration of this leg in seconds. |
+| `miles` | `number` | (walk only) Walking distance in miles. Displayed by `fmtMiles()`. |
+| `points` | `[number, number][]` | World-coordinate path for this leg. Used by `MapView.fitRoute()` and the canvas route overlay renderer. |
+
+---
+
+## Walk link object
+
+Walk links connect two stations that are close enough to walk between. `indexNetwork()` converts the flat array into the bidirectional `net.walkFrom` adjacency list, but the raw objects are also kept in `net.walk_links` for rendering the dashed walk-link lines on the map.
+
+| Field | Type | Description |
+|---|---|---|
+| `a` | `number` | Station ID at one end of the walk link. |
+| `b` | `number` | Station ID at the other end. |
+| `seconds` | `number` | Walking time between `a` and `b` in seconds. |
+| `miles` | `number` | Walking distance in miles. |
+
+---
+
+## Settings object
+
+The `net.settings` object contains scale and timing constants that are used in arrival calculations and display formatting throughout the app.
+
+| Field | Type | Description |
+|---|---|---|
+| `px_per_mile` | `number` | The number of world-coordinate pixels that represent one mile. Used by `walkMinutes()` and `track()` to convert pixel distances to real-world distances and times. |
+| `walk_mph` | `number` | Walking speed in miles per hour. Used by `walkMinutes()` to convert a pixel distance to a walking-time estimate. |
+| `transfer_penalty_sec` | `number` | Extra seconds added when the trip planner accounts for a transfer. Displayed in the route guide as "Allow about N minutes to board." |
+
+<Warning>
+  The `px_per_mile` and `walk_mph` values are set by the backend and baked into the network response. If you change the coordinate system or map projection in the backend, you must update `px_per_mile` accordingly — all arrival calculations and "N min walk" distances in the front-end depend on it being accurate.
+</Warning>

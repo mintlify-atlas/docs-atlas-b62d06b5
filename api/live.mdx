@@ -1,0 +1,144 @@
+---
+title: "GET /api/live — real-time vehicle positions"
+sidebarTitle: "GET /api/live"
+description: "GET /api/live returns the current position and status of every active vehicle in the City Metro network. No authentication required. Refresh every 15 seconds."
+---
+
+`GET /api/live` returns a snapshot of every active vehicle currently on the City Metro network — position, speed, next stop, headsign, and more. The data powers the live arrival tiles shown in the trip planner detail view, the per-line vehicle board on the line screen, and the moving vehicle icons painted on the map canvas.
+
+## Endpoint
+
+| Property       | Value                                                  |
+| -------------- | ------------------------------------------------------ |
+| **Method**     | `GET`                                                  |
+| **URL**        | `https://api.trip-planner.citymetro.xyz/api/live`      |
+| **Auth**       | None required                                          |
+| **Recommended poll interval** | 15 seconds while the browser tab is visible |
+
+## Response
+
+The endpoint returns a **JSON array** of vehicle objects. An empty array (`[]`) means no vehicles are currently active.
+
+<ResponseField name="id" type="number | string" required>
+  Unique identifier for this vehicle. The app stringifies IDs before comparison (`String(v.id) === String(id)`) so treat this as an opaque token rather than assuming a numeric type.
+</ResponseField>
+
+<ResponseField name="line_id" type="string" required>
+  The ID of the transit line this vehicle is currently operating (e.g. `"A"`, `"720"`). Matches `line.id` in the `/api/network` response and in the `linesById` index.
+</ResponseField>
+
+<ResponseField name="x" type="number" required>
+  Current x position of the vehicle in network coordinates. The map canvas uses this to draw the vehicle icon.
+</ResponseField>
+
+<ResponseField name="y" type="number" required>
+  Current y position of the vehicle in network coordinates.
+</ResponseField>
+
+<ResponseField name="next_station_id" type="number | null" required>
+  Numeric ID of the next station the vehicle will reach. `null` when the vehicle's next stop cannot be determined. Used by `arrivals.js` to locate the vehicle on the line's ordered stop sequence.
+</ResponseField>
+
+<ResponseField name="next_station_name" type="string | null">
+  Human-readable name of the next station. Used as a fallback display label when the station is not found in `stationsById`.
+</ResponseField>
+
+<ResponseField name="next_x" type="number | null">
+  X coordinate of the next station in network coordinates. Used together with `next_y`, `x`, and `y` to calculate the remaining distance to the next stop (and therefore the seconds-to-arrival estimate).
+</ResponseField>
+
+<ResponseField name="next_y" type="number | null">
+  Y coordinate of the next station in network coordinates.
+</ResponseField>
+
+<ResponseField name="speed_kmh" type="number" required>
+  Reported vehicle speed. Despite the column name `speed_kmh`, the client-side ETA calculations in `arrivals.js` treat this value as **miles per hour**, matching the behaviour of the original site. Pass this directly to `secondsAtSpeed(distPx, v.speed_kmh, net.settings.px_per_mile)`.
+</ResponseField>
+
+<ResponseField name="headsign" type="string | null">
+  Destination text displayed on the front of the vehicle (e.g. `"Pasadena"`, `"Downtown"`). The arrival engine compares `headsign` against the line's first-station name to determine whether the vehicle is running inbound or outbound.
+</ResponseField>
+
+<ResponseField name="vehicle_label" type="string | null">
+  A vehicle number string rendered as "Bus 1234" or "Train 5678" in the vehicle sheet. `null` for unlabelled vehicles.
+</ResponseField>
+
+<ResponseField name="last_updated" type="string | null">
+  UTC datetime string of the most recent GPS fix, in the format `"YYYY-MM-DD HH:MM:SS"` (space-separated, no timezone suffix). The client converts this to a Unix timestamp by appending `"T"` and `"Z"`: `Date.parse(v.last_updated.replace(' ', 'T') + 'Z')`. `null` when no fix has been received.
+</ResponseField>
+
+<ResponseField name="color" type="string | null">
+  An optional hex colour string that overrides the vehicle icon's default colouring. When `null`, the icon inherits the line's `color` from `/api/network`.
+</ResponseField>
+
+## Refresh behaviour
+
+The app calls `refreshVehicles(net)` on a 15-second `setInterval` timer in `planner-page.js`. Each call replaces `net.vehicles` with the latest array, then triggers a full re-render of the live arrival tiles and vehicle icons. The timer is guarded by `document.hidden` so polling pauses automatically when the tab is backgrounded.
+
+<Note>
+  A vehicle is considered **at stop** — and is shown with an "at stop" indicator rather than a movement ETA — when `Math.hypot(next_x - x, next_y - y) <= 6` pixels. This threshold is applied in `trackedVehicle()` inside `arrivals.js`.
+</Note>
+
+## Examples
+
+### curl
+
+```bash
+curl https://api.trip-planner.citymetro.xyz/api/live
+```
+
+### JavaScript
+
+```js
+import { loadNetwork, refreshVehicles } from './js/api.js';
+
+const net = await loadNetwork();
+await refreshVehicles(net);
+
+const busVehicles = net.vehicles.filter(v => {
+  const line = net.linesById[v.line_id];
+  return line && line.type === 'bus';
+});
+console.log(busVehicles.length, 'buses in service');
+```
+
+### Example response (abbreviated)
+
+```json
+[
+  {
+    "id": 1042,
+    "line_id": "A",
+    "x": 455.3,
+    "y": 302.8,
+    "next_station_id": 4,
+    "next_station_name": "Little Tokyo",
+    "next_x": 451,
+    "next_y": 304,
+    "speed_kmh": 35,
+    "headsign": "Pasadena",
+    "vehicle_label": "Train 1042",
+    "last_updated": "2025-01-15 18:42:07",
+    "color": null
+  },
+  {
+    "id": "bus-720-3",
+    "line_id": "720",
+    "x": 318.1,
+    "y": 275.5,
+    "next_station_id": 21,
+    "next_station_name": "Wilshire / Vermont",
+    "next_x": 320,
+    "next_y": 274,
+    "speed_kmh": 22,
+    "headsign": "Santa Monica",
+    "vehicle_label": "Bus 3301",
+    "last_updated": "2025-01-15 18:42:11",
+    "color": null
+  }
+]
+```
+
+<Tip>
+  To find vehicles heading toward a specific station, use the `vehiclesTo(stationId, lineId, dirKey, net)` helper exported from `arrivals.js`. It filters the `net.vehicles` array, calculates ETA for each vehicle, and returns them sorted soonest-first.
+</Tip>

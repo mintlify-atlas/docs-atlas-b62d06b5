@@ -1,0 +1,392 @@
+---
+title: "JavaScript modules in City Metro Trip Planner"
+sidebarTitle: "Modules"
+description: "A reference for every JavaScript module in City Metro Trip Planner: what it exports, what it depends on, and when to read or modify it."
+---
+
+City Metro Trip Planner is composed of nine JavaScript ES modules. Each module has a clearly scoped responsibility: network data and auth, configuration, canvas rendering, map view composition, arrival maths, shared UI primitives, line screens, and vehicle sheets. This page documents every public export, its imports, and guidance on when to modify each file.
+
+<Tip>
+  `config.js` is the single place to change the API address, vehicle icon paths, routing mode definitions, or the authentication origin. You should never need to edit hardcoded strings in any other module to reconfigure the app for a different deployment.
+</Tip>
+
+---
+
+## api.js
+
+**Imports:** `API_BASE` from `config.js`
+
+`api.js` owns every outbound HTTP call and the entire network data lifecycle. All other modules that need network data call `loadNetwork()` — they never fetch it themselves.
+
+### Exports
+
+#### `Auth` (object)
+
+A lightweight credential store backed by `localStorage`. Keys used: `cm_token` (Bearer token string) and `cm_user` (JSON-serialised user object).
+
+| Member | Type | Description |
+|---|---|---|
+| `token()` | `() => string \| null` | Returns the stored Bearer token, or `null` if not signed in. |
+| `user()` | `() => object \| null` | Parses and returns the stored user object; returns `null` on parse errors. |
+| `set(token, user)` | `(string, object) => void` | Writes both values to `localStorage`. |
+| `clear()` | `() => void` | Removes both values from `localStorage`. Automatically called on a `401` response from any authenticated endpoint. |
+| `login(returnTo?)` | `(string?) => void` | Starts the OAuth flow by redirecting to `API_BASE/api/auth/login`. The default `returnTo` is the current `pathname + search`. |
+| `loggedIn` | `boolean` (getter) | `true` when a token is present. |
+
+#### `api(path, opts?)`
+
+```js
+export async function api(path, opts = {})
+```
+
+A thin `fetch` wrapper that adds `Content-Type: application/json` and an `Authorization: Bearer <token>` header when a token is present. It throws a plain `Error` with a human-readable message on:
+
+- Network failure ("Cannot reach the City Metro server")
+- Any non-`2xx` HTTP status (uses the response `error` field if present, otherwise `Request failed (STATUS)`)
+
+The `path` argument is appended to `API_BASE`. Pass any standard `fetch` options via `opts`; custom `opts.headers` are merged after the defaults.
+
+#### `loadNetwork(force?)`
+
+```js
+export function loadNetwork(force = false)
+```
+
+Fetches `/api/network`, passes the raw response to the private `indexNetwork()` function, and caches the resulting `net` object in the module-level `pending` promise. Subsequent calls return the same promise — only one fetch ever fires per page load. Pass `force = true` to bypass the cache and re-fetch.
+
+`indexNetwork(raw)` transforms the raw API response into the indexed `net` object:
+
+- `net.linesById` — `{ [id]: line }` map built from `raw.lines`
+- `net.stationsById` — `{ [id]: station }` map built from `raw.stations`
+- `net.segsByLine` — `{ [line_id]: segment[] }` map; also parses `segment.points_json` → `segment.pts`
+- Parses `street.points_json` → `street.pts` for each street object
+- `station.lineIds` — string array parsed from `station.line_ids` (comma-separated)
+- `net.walkFrom` — `{ [station_id]: [{id, seconds, miles}] }` bidirectional adjacency list built from `raw.walk_links`
+
+#### `refreshVehicles(net)`
+
+```js
+export async function refreshVehicles(net)
+```
+
+Fetches `/api/live` and sets `net.vehicles` to the returned array. Returns the new vehicles array. Called every 15 seconds by the `setInterval` loop in both entry-point modules.
+
+---
+
+## config.js
+
+**Imports:** none
+
+`config.js` is a pure configuration module — no logic, no side effects, just named exports.
+
+### Exports
+
+| Export | Value | Description |
+|---|---|---|
+| `API_BASE` | `'https://api.trip-planner.citymetro.xyz'` | Root URL for all API calls. Change this to point the app at a different backend. |
+| `VEHICLE_ICONS` | `{ rail: ['img/train.png', 'img/trains.png'], bus: ['img/bus.png'] }` | Ordered list of image paths tried for each vehicle type. Rail tries `train.png` first and falls back to `trains.png`; buses use `bus.png`. If all paths fail, `ui.js` renders a signal SVG instead. |
+| `MODES` | Array of `{ id, label, short }` | The three routing preferences: `fastest`, `fewest_transfers`, `fewest_walking`. Displayed as mode tabs in the trip planner. |
+| `SHOW_LIVE_ON_MAP` | `true` | When `true`, the map page shows the next live vehicle (minutes + icon chip) on each nearby-service row. Set to `false` to hide live data from the map page entirely. |
+| `AUTH_ORIGIN` | `'https://auth.citymetro.xyz'` | Base URL for the Authentik identity provider. Used for the "Manage account" external link in the account dialog. |
+
+---
+
+## canvas.js (`CanvasMap`)
+
+**Imports:** none
+
+`canvas.js` is the low-level interaction and rendering engine. It knows nothing about transit data — it only manages the 2D canvas transform, pointer events, and the draw loop.
+
+### Constructor
+
+```js
+new CanvasMap(wrap, canvas, { onDraw, onTap, insets })
+```
+
+| Parameter | Type | Description |
+|---|---|---|
+| `wrap` | `HTMLElement` | Container element. A `ResizeObserver` watches this element for size changes. |
+| `canvas` | `HTMLCanvasElement` | The canvas to draw on. `touch-action: none` is applied automatically. |
+| `onDraw` | `(ctx, map) => void` | Called inside `requestAnimationFrame` after each transform. `ctx` is the 2D context pre-transformed to world coordinates; `map` is the `CanvasMap` instance. |
+| `onTap` | `(world, screen) => void` | Called for a short press (< 600 ms, < 6 px movement) with both the world-coordinate point and the screen-coordinate point. |
+| `insets` | `() => { top, right, bottom, left }` | Function returning the current UI insets in CSS pixels. Used by `_visible()`, `_clamp()`, and `fit()` so that map centring accounts for open panels and sheets. |
+
+### Key methods
+
+| Method | Signature | Description |
+|---|---|---|
+| `setBounds(b)` | `({ x0, y0, x1, y1 }) => void` | Sets the world-coordinate limits of the network. Calls `_limits()` to recompute `minScale` and `_clamp()` to keep the viewport inside the bounds. |
+| `render()` | `() => void` | Schedules a `requestAnimationFrame` draw. Coalesces — multiple calls before the next frame produce only one draw. |
+| `zoomAt(factor, sx?, sy?)` | `(number, number?, number?) => void` | Multiplies `scale` by `factor` while keeping the screen point `(sx, sy)` stationary. Defaults to the canvas centre. |
+| `centerOn(x, y, scale?)` | `(number, number, number?) => void` | Centres the visible area (accounting for insets) on the world coordinate `(x, y)`. Optionally sets `scale` at the same time. |
+| `fit(points, opts?)` | `([number, number][], { pad?, maxScale?, minBox? }?) => void` | Computes a scale and centre that fits the given world-coordinate points into the visible area. `pad` adds extra pixels of breathing room; `maxScale` prevents over-zooming; `minBox` ensures a minimum bounding box size even for single points. |
+| `toWorld(sx, sy)` | `(number, number) => { x, y }` | Converts a screen coordinate to a world coordinate using the current transform. |
+
+### Pointer events
+
+- **Single pointer pan:** Each `pointermove` with one active pointer translates `ox`/`oy` by the delta since the last event.
+- **Two-pointer pinch zoom:** A second `pointerdown` starts pinch tracking. Each `pointermove` with two pointers calls `zoomAt` centred on the midpoint of the two touches.
+- **Wheel zoom:** `wheel` events call `zoomAt(1.12)` or `zoomAt(1/1.12)` centred on the cursor position.
+- **Tap detection:** A `pointerup` is treated as a tap only if a single pointer was active, the pointer moved less than 6 px, and the press lasted under 600 ms.
+
+### `onResize` callback
+
+After `ResizeObserver` fires and the canvas dimensions are updated, `CanvasMap` calls `this.onResize()` if it is set. `MapView` uses this to call `view.reframe()` so that the centred focus point stays in view when panels open or the device rotates.
+
+---
+
+## mapview.js (`MapView`)
+
+**Imports:** `CanvasMap` from `canvas.js`, `safeColor` from `ui.js`, `VEHICLE_ICONS` from `config.js`
+
+`MapView` wraps `CanvasMap` and adds all transit-specific rendering and tap handling. It is the bridge between raw network data and pixels on screen.
+
+### Constructor
+
+```js
+new MapView({ wrap, canvas, net, onStation, onVehicle, onEmpty, insets, showVehicles, showWalkLinks })
+```
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `wrap` | `HTMLElement` | — | Passed through to `CanvasMap`. |
+| `canvas` | `HTMLCanvasElement` | — | Passed through to `CanvasMap`. |
+| `net` | `object` | — | The indexed network object from `loadNetwork()`. |
+| `onStation` | `(station) => void` | — | Called when the user taps near a station (within 22 scaled pixels). |
+| `onVehicle` | `(vehicle) => void` | — | Called when the user taps near a visible vehicle (within 18 scaled pixels). Vehicles take priority over stations. |
+| `onEmpty` | `(world, screen) => void` | — | Called when a tap lands on empty map space. Used by the map page to move the "you are here" pin. |
+| `insets` | `() => insets` | — | Passed through to `CanvasMap`. |
+| `showVehicles` | `boolean` | `true` | Whether individual live vehicles are drawn. `index.html` sets this to `false` — the map page shows only per-direction ETAs in the side panel, not vehicle dots. |
+| `showWalkLinks` | `boolean` | `true` | Whether dashed walk-connection lines are drawn between nearby stations. Also `false` on `index.html`. |
+
+### Key methods
+
+| Method | Description |
+|---|---|
+| `set(state)` | Merges the given partial state into the `MapView` instance and calls `map.render()`. Used to update `pin`, `route`, `selectedId`, `focusLine`, `tracked`, `vehicleLines`, `activeLeg`, and `showVehicles` in one call. |
+| `render()` | Delegates to `map.render()`. |
+| `reframe()` | Re-centres on `_focus` (the last explicit focus point) if one exists, otherwise just re-renders. Called after UI layout changes. |
+| `fitAll()` | Fits all station coordinates. Clears `_focus`. |
+| `fitLine(id)` | Fits the segment point cloud for one line. Clears `_focus`. |
+| `fitRoute(r)` | Fits all leg point arrays in a route plan. Clears `_focus`. |
+| `focusAt(x, y, scale?)` | Stores `{x, y}` as `_focus` and calls `map.centerOn`. Used for programmatic focus that should survive layout reflows. |
+| `focusStation(s, scale?)` | Sets `selectedId = s.id` and calls `focusAt(s.x, s.y, scale)`. |
+
+### Draw layers (in order)
+
+The `draw(ctx, m)` method renders layers from bottom to top:
+
+1. **Streets** — filled polylines in street colours (default `#D5D9E0`)
+2. **Walk links** — dashed lines between walkable station pairs (only when `showWalkLinks` is `true` and `map.scale > 0.5`)
+3. **Line segments** — coloured polylines; dimmed to 15% opacity when a `focusLine` is set and the segment's line does not match it, or to 22% when a route is active
+4. **Route overlay** — white outline + coloured fill for each leg; walk legs use a dot-dash pattern; the origin and destination get coloured terminal circles (green / red)
+5. **Tracked vehicle** (`drawTracked`) — larger version of the vehicle chip for the followed vehicle, with a minutes bubble
+6. **Stations** — white circles with a dark outline, sized by `s.type`; the selected station gets a blue ring; labels appear at appropriate zoom levels
+7. **Live vehicles** (`drawVehicle`) — white icon on a black disc, ringed in line colour
+8. **"You are here" pin** — blue dot with a translucent halo
+
+### `drawVehicle(ctx, v, k)`
+
+Renders one live vehicle at its `(v.x, v.y)` world position: a white outer ring in the line colour, a black inner disc, and the vehicle-type icon (`img/train.png` or `img/bus.png`) centred on the disc. If the icon image has not loaded or failed, the line ID is rendered as white text instead.
+
+### `drawTracked(ctx, k)`
+
+Renders the vehicle the trip guide is currently following. The chip is larger (22 px radius vs. 14 px) and, if `t.minutes` is not `null`, a coloured pill badge with the minutes value floats above it.
+
+---
+
+## arrivals.js
+
+**Imports:** none (pure data functions — no DOM, no fetch)
+
+`arrivals.js` is the arrival-time calculation engine. Every function is a pure transform over the `net` object and live vehicle data. There are no side effects, no DOM access, and no fetch calls.
+
+### Exports
+
+| Export | Signature | Description |
+|---|---|---|
+| `MAX_WALK_MIN` | `20` | Maximum walking time in minutes. Services beyond this threshold are excluded from the "nearby" panel. |
+| `orderedLine(lineId, net)` | — | Sorts segments by `seq_order`; returns `{ segs, ids, first, last }` where `ids` is the ordered array of station IDs and `first`/`last` are the terminal station objects. Prefers `direction === 'both'` segments. |
+| `track(v, targetId, net)` | — | Computes `{ secs, stops, minutes }` representing how far vehicle `v` is from `targetId`. Accounts for direction of travel (the vehicle may need to reach a terminal and turn around before reaching the target). |
+| `etaMinutes(v, targetId, net)` | `(vehicle, number, net) => number \| null` | Returns the arrival estimate in whole minutes, or `null` if the vehicle has no position data. |
+| `trackVehicle(v, targetId, net)` | `(vehicle, number, net) => object \| null` | Returns the full tracking object `{ secs, stops, minutes }`, or `null`. |
+| `dirKeyOf(v, line)` | `(vehicle, { first }) => 'inbound' \| 'outbound'` | Returns `'inbound'` if the vehicle's `headsign` matches `line.first.name`; otherwise `'outbound'`. |
+| `vehiclesTo(stationId, lineId, dirKey, net)` | — | Returns all vehicles on `lineId` heading in `dirKey` toward `stationId`, sorted by `secs` ascending. |
+| `departures(stationId, lineId, net)` | — | Returns `[{ key, headsign, destId, vehicles, etas }]` — one entry per direction, filtered to exclude the direction whose destination is the station itself. `etas` contains up to four ETA values in minutes. |
+| `nearbyServices(pin, net, maxStations?)` | — | Returns the best service per line+direction within `MAX_WALK_MIN` minutes' walk of `pin`. Deduplicates by `lineId|dirKey` key, keeping the nearest station. Sorted by distance then by first ETA. |
+| `stationBoard(stationId, net)` | — | Returns `[{ line, dirs }]` for all lines calling at a station. Each `dirs` entry is the output of `departures`. |
+| `lineStops(lineId, net)` | — | Returns the ordered array of station objects for a line, using `orderedLine`. |
+| `walkMinutes(distPx, net)` | `(number, net) => number` | Converts a pixel distance to walking minutes using `net.settings.px_per_mile` and `net.settings.walk_mph`. |
+| `nearestStation(p, net)` | — | Returns `{ station, dist }` for the nearest station by Euclidean pixel distance. |
+| `nearestStreet(p, net, maxPx?)` | — | Returns the name of the nearest street polyline within `maxPx` pixels (default 45), or `null`. |
+
+<Note>
+  The `speed_kmh` field on vehicle objects is treated as **mph** in all arrival calculations, matching the behaviour of the original site. This is a known data-model quirk — do not attempt to convert it.
+</Note>
+
+---
+
+## ui.js
+
+**Imports:** `api`, `Auth` from `api.js`; `AUTH_ORIGIN`, `VEHICLE_ICONS` from `config.js`
+
+`ui.js` provides all shared UI primitives: DOM helpers, formatting functions, icon strings, the `Tabs` and `Pager` components, and the page chrome (navbar, account dialog, hamburger menu).
+
+### DOM helpers and formatters
+
+| Export | Description |
+|---|---|
+| `$(sel, el?)` | `el.querySelector(sel)`. Defaults to `document`. |
+| `$$(sel, el?)` | `[...el.querySelectorAll(sel)]`. Defaults to `document`. |
+| `esc(v)` | HTML-escapes `&`, `<`, `>`, `"`, and `'`. Safe to use in template literals that produce innerHTML. |
+| `safeColor(c, fallback?)` | Returns `c` if it is a valid 3–8 digit hex colour, otherwise `fallback` (default `'#374151'`). |
+| `fmtMin(sec)` | Formats seconds as `"N min"` or `"N h M min"` (minimum 1 minute). |
+| `fmtMiles(mi)` | Formats a mile value as `"under 0.1 mi"` or `"N.NN mi"`. |
+| `fmtClock(ms)` | Formats a millisecond timestamp as a localised `"H:MM AM/PM"` clock string. |
+
+### `ICON`
+
+An object of inline SVG strings. Every icon is a `20×20` viewport SVG with `stroke="currentColor"` and `aria-hidden="true"`.
+
+Available keys: `walk`, `arrow`, `back`, `close`, `swap`, `refresh`, `locate`, `pin`, `check`, `chevron`, `search`, `station`, `access`, `stop`.
+
+### `liveIcon(type)`
+
+```js
+export function liveIcon(type)
+```
+
+Returns an HTML string for a live-vehicle chip icon. Tries each image path in `VEHICLE_ICONS[type]` in order; if all fail, `window.__liveFallback` replaces the `<img>` with a signal SVG inline.
+
+### `lineBadge(line, size?)`
+
+```js
+export function lineBadge(line, size = '')
+```
+
+Returns an `<img>` pointing to `line.image_url` (if set) or a `<span class="badge">` coloured with `line.color` and `line.text_color`. The `size` string is appended as an extra CSS class (`'xl'`, `'lg'`, `'xxl'`, etc.). Rail badges get the `round` modifier class.
+
+### `toast(msg)`
+
+Inserts (or reuses) a `#toast` element, sets its text, adds the `show` class, and removes it after 2600 ms.
+
+### `Tabs({ items, active, onChange, label?, variant?, swipePanel? })`
+
+An accessible tab bar with keyboard arrow-key navigation. Returns `{ el, select, value, setItems }`.
+
+| Option | Description |
+|---|---|
+| `items` | Array of `{ id, label, html?, sub? }`. `html` overrides `label` in the rendered button. `sub` adds a small secondary label. |
+| `active` | Initially selected tab `id`. |
+| `onChange` | Called with the new `id` when the selection changes (not called for silent programmatic changes). |
+| `variant` | CSS modifier: `'segmented'` (default) or `'chips'`. |
+| `swipePanel` | Optional element to attach horizontal swipe detection to. A swipe of more than 60 px (and more horizontal than vertical) advances or retreats one tab. |
+
+Keyboard: `ArrowRight` / `ArrowLeft` move between tabs and focus the newly active button.
+
+### `Pager({ items, active, onChange, label? })`
+
+A tab bar + swipeable pane container. On desktop only the active pane is visible; on mobile all panes sit side by side and scroll horizontally. Returns `{ el, pager, tabs, value, update }`.
+
+The `update(next, nextTabs?)` method re-renders pane content in place without losing the scroll position — used by the 15-second live refresh to update arrival tiles without resetting the scroll state.
+
+### `mountChrome(active)`
+
+```js
+export function mountChrome(active)
+```
+
+Inserts the full page chrome at the top of `document.body`: a fixed navbar with the City Metro logo, navigation links, and a hamburger menu for mobile; a slide-out nav drawer; and an account dialog overlay. The `active` argument (`'map'` or `'plan'`) sets the `aria-current="page"` attribute on the matching nav link.
+
+The account dialog renders a sign-in prompt for guests or the user's name, email, saved journeys list, and account management links for signed-in users. Saved journeys are fetched from `/api/journeys` after the dialog opens.
+
+---
+
+## linescreen.js
+
+**Imports:** `api` from `api.js`; `esc`, `lineBadge`, `safeColor`, `Pager`, `ICON`, `liveIcon`, `fmtMin`, `fmtMiles` from `ui.js`; `lineStops`, `departures`, `terminals` from `arrivals.js`; `vehicleRows` from `vehiclesheet.js`
+
+`linescreen.js` renders the full menu for a single transit line. It appears as a panel on the map page and as a modal overlay in the trip planner.
+
+### `renderLineScreen(root, opts)` → `{ refresh(), destroy() }`
+
+```js
+export function renderLineScreen(root, { net, lineId, stationId, onBack, onStation, onVehicle, onShowMap, backLabel })
+```
+
+Renders immediately into `root` and returns a controller object.
+
+| Option | Description |
+|---|---|
+| `net` | The indexed network object. |
+| `lineId` | The line to display. |
+| `stationId?` | If provided, shows next-arrival tiles for that station at the top of each direction pane. |
+| `onBack` | Called when the back button is tapped. |
+| `onStation` | Called with a station object when a stop row is tapped. |
+| `onVehicle` | Called with a vehicle object when a vehicle row is tapped. |
+| `onShowMap?` | If provided, a "Show on map" button is rendered. |
+| `backLabel?` | Label for the back button (default `'Back'`). |
+
+The rendered screen contains:
+- A header with the line badge, name, type, frequency, and description
+- A `Pager` with one pane per direction (Outbound / Inbound), each listing stops with per-stop live ETAs
+- A section showing live vehicles on the line (via `vehicleRows`), walking connections to other lines, and service alerts
+
+**Service alerts** are fetched asynchronously from `/api/advisories?line_id=…` after the initial render. When the response arrives, the `#lsAlerts` element is updated in place.
+
+**`refresh()`** re-renders the direction pager and the extras section (live vehicles, walking connections, alerts). Called by the 15-second interval in the map page.
+
+**`destroy()`** sets the internal `alive` flag to `false`, preventing any further DOM mutations after the screen is removed.
+
+---
+
+## vehiclesheet.js
+
+**Imports:** `esc`, `lineBadge`, `safeColor`, `ICON`, `liveIcon` from `ui.js`; `trackVehicle`, `etaMinutes`, `dirKeyOf`, `terminals` from `arrivals.js`
+
+`vehiclesheet.js` renders vehicle rows and the detailed vehicle sheet. It is used by both the map page and the trip planner.
+
+### Exports
+
+#### `vehicleRows(net, lineId, stationId?)`
+
+Returns an HTML string of tappable `<button class="ls-veh">` rows, one per live vehicle on `lineId`. Each row shows the live icon, vehicle label, headsign, next stop name, and ETA in minutes (measured to `stationId` if provided, otherwise to the vehicle's own next stop).
+
+#### `vehicleSheet({ net, v, stationId?, mode? })`
+
+Returns an HTML string for the full detail card of one vehicle. The card includes:
+
+- The line badge (large), direction arrow, and headsign
+- If `stationId` is provided: "N stops away" with the live icon and minutes count
+- Otherwise: "Next stop" with minutes to the vehicle's own next station
+- "At stop" or "Next stop" label with the next station name
+- A "Counting toward [station name]" note when `stationId` is set
+- Crowding (always shown as "unknown") and accessibility chips
+- An "Updated N seconds ago" line using the cosmetic counter
+
+The `mode` option (`'browse'` or `'riding'`) is used by the trip planner to decide whether to render the GO footer button or the "Back to steps" button outside this function.
+
+#### `trackedMark(net, v, stationId?)`
+
+```js
+export function trackedMark(net, v, stationId = null)
+```
+
+Returns `{ x, y, type, color, minutes }` — the data `MapView.drawTracked` needs to draw the followed-vehicle chip. `minutes` is measured to `stationId` if given, otherwise to the vehicle's next station.
+
+#### `updatedSeconds(id)`
+
+```js
+export function updatedSeconds(id)
+```
+
+Returns the current value of the cosmetic "updated ago" counter for a vehicle. Each vehicle gets its own counter that counts up from 0 each second and resets to 0 at a random point between 30 and 90 seconds. A single `setInterval` ticker drives all counters and updates any `[data-upd="id"]` elements in the DOM.
+
+#### `headsignOf(v, first, last)`
+
+```js
+export const headsignOf = (v, first, last) =>
+  v.headsign || (dirKeyOf(v, { first }) === 'inbound' ? first && first.name : last && last.name) || ''
+```
+
+Resolves a display headsign from the vehicle's own `headsign` field, falling back to the terminal station name inferred from the vehicle's direction.

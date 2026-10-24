@@ -1,0 +1,223 @@
+---
+title: "Trip Planner: multi-mode routing with live arrivals"
+sidebarTitle: "Trip Planner"
+description: "Plan a City Metro journey between any two stations. The planner fetches multi-mode routes, shows live departure countdowns, and guides riders step by step."
+---
+
+The trip planner (`planner.html`) turns any two City Metro stations into a full journey guide. It fetches multi-mode routes from the planning API, enriches them with live vehicle ETAs, and walks riders through each leg step by step — all in a single responsive page backed by a MapView showing the route in context.
+
+## Six views
+
+The planner is a single-page app driven by a `view` state variable. Every call to `setView(v)` updates `app.dataset.view` and re-renders. The six views are:
+
+<Accordion title="search — pick start and destination">
+  The search view shows a station autocomplete list filtered against `net.stations` (name, street, and line IDs). When the query is empty the list shows the last 6 recently visited stations (from `localStorage`) followed by all stations sorted alphabetically. Tapping a suggestion calls `choose(field, station)` which stores the selection, pushes the station ID to recents, and — once both ends are set — immediately calls `planTrip()`.
+</Accordion>
+
+<Accordion title="options — choose a routing mode">
+  Three mode tabs are rendered by the `Tabs` component using the `MODES` constant:
+
+  ```js
+  // config.js
+  export const MODES = [
+    { id: 'fastest',           label: 'Fastest',           short: 'Fastest'   },
+    { id: 'fewest_transfers',  label: 'Fewest transfers',  short: 'Transfers' },
+    { id: 'fewest_walking',    label: 'Least walking',     short: 'Walking'   }
+  ];
+  ```
+
+  Each tab's sub-label shows the total journey time (via `fmtMin(r.totalSeconds)`). The primary route card shows:
+  - Total minutes, departure and arrival times from `timing(r)`
+  - A `segbar` — a proportional bar divided into coloured ride segments and grey walk segments
+  - Facts (number of transfers, total walking time)
+  - A live "Go in **N** min" chip if a live ETA is available, otherwise an estimates notice
+
+  Other available modes appear below as alternative rows.
+</Accordion>
+
+<Accordion title="detail — full route guide">
+  The detail view renders the complete step-by-step breakdown:
+
+  - **Summary header** — leave time, arrive time, total minutes, thin `segbar`
+  - **Live tiles** — up to 4 ETAs for the first boarding stop (from `boardInfo(r).etas.slice(0, 4)`)
+  - **Live vehicles per ride leg** — `vehicleRows(net, lineId, fromStationId)` for each unique line in the route
+  - **Ordered steps** — walk legs (`fmtMin` + `fmtMiles`) and ride legs (line badge, headsign, from/to stops with times, collapsible intermediate stop list)
+  - **Destination card** at the bottom with arrival time
+  - **Save**, **Share**, and **GO** buttons in the footer
+</Accordion>
+
+<Accordion title="nav — step-by-step navigation">
+  Pressing **GO** from the detail view enters the nav view. One leg is shown at a time:
+
+  - **Step N of M** counter and dot-progress indicator
+  - Walk card: destination name, duration, distance, map hint
+  - Ride card: line badge, headsign, board/alight stops with times, live vehicle rows for that leg, intermediate stop list in a `<details>` element
+  - "Next up" sentence describing the following leg
+  - **Back** / **Next step** (or **Overview** / **Finish**) footer buttons
+
+  Tapping a line badge inside the nav view opens the full line screen as a modal overlay.
+</Accordion>
+
+<Accordion title="vehicle — individual vehicle sheet">
+  Tapping any vehicle row (from the detail or nav views, or from the map) switches to the vehicle view, which renders `vehicleSheet({ net, v, stationId, mode })`. The `mode` is `'preview'` when opened before GO and `'riding'` when opened during navigation. In `'riding'` mode a floating **ARRIVE AT** chip is shown over the map.
+</Accordion>
+
+<Accordion title="done — journey complete">
+  After the last step the rider taps **Finish** to reach the done screen, which shows:
+  - "Journey complete" heading and destination name
+  - Stats: total minutes, number of transfers, minutes walking
+  - **Plan another trip**, **Save this journey**, and **Back to the map** actions
+</Accordion>
+
+## Planning API
+
+Routes are fetched from:
+
+```
+GET /api/plan?from_station=<id>&to_station=<id>
+```
+
+The response contains a `routes` object keyed by mode ID, a `lines` map, and any shared metadata. Each route object has:
+
+| Field | Description |
+|---|---|
+| `found` | `true` if a route exists |
+| `totalSeconds` | End-to-end journey time |
+| `transfers` | Number of line changes |
+| `walkSeconds` | Total walking time |
+| `legs` | Array of walk and ride leg objects |
+| `same_as` | Mode ID of an equivalent route (if any) |
+
+## Live timing
+
+Two functions enrich a raw route with live data:
+
+### `boardInfo(r)`
+
+Finds the first `ride` leg in the route, calls `departures(leg.from.id, leg.line_id, net)` to get all approaching vehicles, and returns the direction object whose `headsign` matches the leg (falling back to any direction that has ETAs). Returns `{ leg, line, etas }`.
+
+### `timing(r)`
+
+Calculates wall-clock times for the whole journey:
+
+```js
+function timing(r) {
+  const wait = net.settings.transfer_penalty_sec;
+  let walkBefore = 0;
+  for (const l of r.legs) { if (l.type === 'ride') break; walkBefore += l.seconds; }
+
+  const b = boardInfo(r), e = b && b.etas[0];
+  const boardAt = S.t0 + Math.max(e != null ? e * 60 : 0, walkBefore) * 1000;
+  const leaveAt = boardAt - walkBefore * 1000;
+
+  let t = leaveAt, rides = 0;
+  const legs = r.legs.map(l => {
+    if (l.type === 'ride') {
+      if (rides === 0) t = Math.max(t, boardAt);
+      else t += wait * 1000;
+      rides++;
+    }
+    const start = t; t += l.seconds * 1000;
+    return { start, end: t };
+  });
+  return { leaveAt, arriveAt: t, goIn: e != null ? Math.max(e, Math.ceil(walkBefore / 60)) : null, live: e != null, legs };
+}
+```
+
+The returned object drives the "Leave at", "Arrive at", and "Go in N min" display. `live: true` indicates at least one real ETA was available.
+
+## Recent stations
+
+The last 6 visited station IDs are stored in `localStorage` under the key `cm_recent_stations`:
+
+```js
+const RECENT = 'cm_recent_stations';
+const recents    = () => { try { return JSON.parse(localStorage.getItem(RECENT)) || []; } catch { return []; } };
+const pushRecent = id => {
+  try {
+    localStorage.setItem(RECENT, JSON.stringify(
+      [id, ...recents().filter(x => x !== id)].slice(0, 6)
+    ));
+  } catch { /* storage off */ }
+};
+```
+
+Recents appear at the top of the search list when no query is typed, labelled **"Recent"**.
+
+## Saving a journey
+
+Tapping **Save** (in the detail view or on the done screen) calls `saveJourney()`:
+
+```js
+async function saveJourney() {
+  if (!Auth.loggedIn) { toast('Sign in to save journeys'); return; }
+  await api('/api/journeys', {
+    method: 'POST',
+    body: JSON.stringify({
+      from_station_id: S.from.id,
+      to_station_id:   S.to.id,
+      from_name:       S.from.name,
+      to_name:         S.to.name
+    })
+  });
+  toast('Journey saved');
+}
+```
+
+`POST /api/journeys` requires a valid Bearer token (managed by the `Auth` module).
+
+## Sharing a journey
+
+Tapping **Share** calls `navigator.share` if available, otherwise falls back to `navigator.clipboard.writeText(location.href)` with a "Link copied" toast.
+
+## Deep linking
+
+<Tip>
+  Build a shareable trip URL by appending `?from=<stationId>&to=<stationId>` — and optionally `?mode=<modeId>` — to `planner.html`. The planner reads these on boot, pre-fills both inputs, and immediately calls `planTrip()`, so the recipient lands directly on the options screen.
+
+  ```js
+  // Construct a deep-link URL for a pre-planned trip
+  const url = new URL('planner.html', location.origin);
+  url.searchParams.set('from', 'union_station');
+  url.searchParams.set('to',   'airport_central');
+  url.searchParams.set('mode', 'fewest_transfers');
+  console.log(url.toString());
+  // → https://trip.citymetro.xyz/planner.html
+  //     ?from=union_station&to=airport_central&mode=fewest_transfers
+  ```
+
+  Any `mode` value not present in `MODES` is silently ignored and `'fastest'` is used instead.
+</Tip>
+
+### Supported parameters
+
+| Parameter | Values | Effect |
+|---|---|---|
+| `from` | Station ID | Pre-fills the **From** field |
+| `to` | Station ID | Pre-fills the **To** field |
+| `mode` | `fastest` · `fewest_transfers` · `fewest_walking` | Selects the routing mode tab |
+
+## Live refresh
+
+A `setInterval` fires every **15 seconds** while the planner is in one of the live-data views (`options`, `detail`, `vehicle`, or `nav`) and the tab is visible:
+
+```js
+setInterval(async () => {
+  if (document.hidden) return;
+  if (!['options', 'detail', 'vehicle', 'nav'].includes(S.view) || !S.plan) return;
+  const { refreshVehicles } = await import('./api.js');
+  await refreshVehicles(net);
+  S.t0 = Date.now();
+  render();
+}, 15000);
+```
+
+`S.t0` is reset on each refresh so that `timing(r)` always calculates from the most recent live snapshot.
+
+## Map synchronisation
+
+`mapSync()` is called inside `requestAnimationFrame` at the end of every `render()`. It updates the `MapView` with the current route, active leg, tracked vehicle, and visible lines — so the map always reflects what is shown in the panel.
+
+<Note>
+  The planner map starts with all vehicles hidden. `showVehicles` is never set on this map; vehicle icons only appear as tappable rows in the panel (via `vehicleRows`) and as a tracked marker on the canvas when a `trackedMark` is set.
+</Note>

@@ -1,0 +1,115 @@
+{
+  "projectType": "saas",
+  "projectName": "City Metro Trip Planner",
+  "projectDescription": "A mobile-first transit web app for City Metro that lets riders explore the network on an interactive map, plan multi-leg trips with live vehicle arrivals, and save journeys to their account.",
+  "theme": "almond",
+  "primaryColor": "#ec5800",
+  "lightColor": "#0a0a0a",
+  "darkColor": null,
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Overview",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "deployment"
+            ]
+          },
+          {
+            "group": "Core Features",
+            "pages": [
+              "features/map",
+              "features/trip-planner",
+              "features/live-vehicles",
+              "features/line-screen"
+            ]
+          },
+          {
+            "group": "Authentication",
+            "pages": [
+              "auth/overview",
+              "auth/oauth-flow",
+              "auth/saved-journeys"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Developer Guide",
+        "groups": [
+          {
+            "group": "Architecture",
+            "pages": [
+              "architecture/overview",
+              "architecture/modules",
+              "architecture/data-model"
+            ]
+          },
+          {
+            "group": "API Reference",
+            "pages": [
+              "api/network",
+              "api/plan",
+              "api/live",
+              "api/advisories",
+              "api/journeys"
+            ]
+          },
+          {
+            "group": "Configuration",
+            "pages": [
+              "config/settings",
+              "config/deployment"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Interactive canvas-based transit map with pan, pinch-zoom, and tap-to-select stations",
+    "Multi-mode trip planner (fastest, fewest transfers, least walking) with step-by-step navigation",
+    "Real-time vehicle tracking with live arrival countdowns for bus and rail",
+    "Per-line screen showing stop list, live vehicle positions, service alerts, and walking connections",
+    "Individual vehicle sheet with stops-away count, next stop, and accessibility info",
+    "Station popup with next arrivals per direction and full stop lists for each line",
+    "OAuth-based sign-in via Authentik for saving and syncing journeys across devices",
+    "Mobile-first responsive UI with swipeable panels, bottom sheets, and a hamburger nav drawer",
+    "Cloudflare Workers + static assets deployment via wrangler"
+  ],
+  "publicApiSurface": [
+    "GET /api/network — full network data (lines, stations, segments, streets, walk_links, settings)",
+    "GET /api/live — live vehicle positions for all lines",
+    "GET /api/plan?from_station=<id>&to_station=<id> — multi-mode trip planning response",
+    "GET /api/advisories?line_id=<id> — service alerts for a specific line",
+    "GET /api/journeys — saved journeys for the authenticated user",
+    "POST /api/journeys — save a new journey",
+    "DELETE /api/journeys/:id — delete a saved journey",
+    "GET /api/auth/login?site=<origin>&return=<path> — initiate OAuth login flow",
+    "Auth.token() — retrieve stored Bearer token from localStorage",
+    "Auth.user() — retrieve stored user object from localStorage",
+    "Auth.set(token, user) — persist auth credentials",
+    "Auth.clear() — remove auth credentials",
+    "Auth.login(returnTo) — redirect to Authentik OAuth flow",
+    "api(path, opts) — authenticated fetch wrapper returning parsed JSON",
+    "loadNetwork(force?) — fetch and index the full network, cached as a singleton promise",
+    "refreshVehicles(net) — fetch latest live vehicle positions and update net.vehicles",
+    "MapView — canvas-based map renderer with fitAll/fitLine/fitRoute/focusStation methods",
+    "renderLineScreen(root, opts) — mount the per-line stop/vehicle/alert panel",
+    "vehicleSheet({net, v, stationId, mode}) — render the single-vehicle detail card HTML",
+    "vehicleRows(net, lineId, stationId?) — render the tappable list of vehicles on a line",
+    "nearbyServices(pin, net, maxStations?) — nearest services within MAX_WALK_MIN walking time",
+    "departures(stationId, lineId, net) — outbound/inbound ETAs for a station on a line",
+    "stationBoard(stationId, net) — all lines and arrival directions for a station",
+    "lineStops(lineId, net) — ordered stop list for a line",
+    "etaMinutes(v, targetId, net) — minutes until a vehicle reaches a target station",
+    "trackVehicle(v, targetId, net) — stops and seconds from a vehicle to a target station",
+    "MODES — routing preference options: fastest, fewest_transfers, fewest_walking",
+    "API_BASE — base URL for the City Metro API (https://api.trip-planner.citymetro.xyz)",
+    "AUTH_ORIGIN — Authentik authentication origin (https://auth.citymetro.xyz)"
+  ]
+}

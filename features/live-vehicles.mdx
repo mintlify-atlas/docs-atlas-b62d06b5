@@ -1,0 +1,203 @@
+---
+title: "Live Vehicle Tracking: real-time bus and rail arrivals"
+sidebarTitle: "Live Vehicles"
+description: "City Metro Trip Planner displays live vehicle positions refreshed every 15 seconds. Arrival countdowns use distance and speed_kmh to compute minutes to any station."
+---
+
+City Metro surfaces real-time vehicle positions throughout the app — in nearby-service rows, station arrival boards, line screens, and the trip guide. Every 15 seconds `refreshVehicles(net)` silently replaces `net.vehicles` so all downstream functions automatically see the latest data on their next call.
+
+## Live data feed
+
+Live data comes from:
+
+```
+GET /api/live
+```
+
+The response is an array of vehicle objects. Each vehicle has the following fields:
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | string / number | Unique vehicle identifier |
+| `line_id` | string | The line this vehicle is running on |
+| `x` | number | Current world X position |
+| `y` | number | Current world Y position |
+| `next_station_id` | number | ID of the next station the vehicle will reach |
+| `next_x` | number | World X of the next station |
+| `next_y` | number | World Y of the next station |
+| `speed_kmh` | number | Reported speed (treated as mph — see note below) |
+| `headsign` | string | Destination display text |
+| `vehicle_label` | string | Human-readable vehicle number (e.g. `"42"`) |
+| `last_updated` | string | ISO-ish UTC timestamp of the last GPS fix |
+| `color` | string | Optional per-vehicle override colour |
+
+`refreshVehicles(net)` fetches `/api/live` and sets `net.vehicles`. All other modules read directly from `net.vehicles`, so there is no secondary cache to invalidate.
+
+## Arrival calculation (`arrivals.js`)
+
+All ETA logic lives in `arrivals.js`. The functions build an ordered station list from the segment graph, then walk the vehicle along the line to count seconds and stops to any target station.
+
+### `orderedLine(lineId, net)`
+
+Builds the ordered station sequence for a line:
+
+1. Filters `net.segsByLine[lineId]` to `direction === 'both'` (falls back to all segments if none match).
+2. Sorts by `seg_order`.
+3. Builds an `ids` array: `[segs[0].from_station_id, ...segs.map(s => s.to_station_id)]`.
+4. Returns `{ segs, ids, first, last }` where `first` and `last` are the terminal station objects.
+
+### `dirKeyOf(v, line)`
+
+Returns `'inbound'` if `v.headsign` matches `line.first.name`, otherwise `'outbound'`.
+
+### `track(v, targetId, net)`
+
+The core arrival function. Given a vehicle and a target station ID, returns `{ secs, stops, minutes }`:
+
+```js
+// Simplified track() logic
+function track(v, targetId, net) {
+  if (!v || v.next_station_id == null) return null;
+  const line = orderedLine(v.line_id, net);
+  if (!line) return null;
+  const { segs, ids } = line;
+  const t = ids.indexOf(targetId), n = ids.indexOf(v.next_station_id);
+  if (t < 0 || n < 0) return null;
+
+  // Distance to next station uses speed_kmh (treated as mph) and px_per_mile
+  let secs = v.next_x != null
+    ? secondsAtSpeed(Math.hypot(v.next_x - v.x, v.next_y - v.y), v.speed_kmh, net.settings.px_per_mile)
+    : 0;
+
+  let stops;
+  if (dirKeyOf(v, line) === 'outbound') {
+    if (t >= n) {
+      // Target is ahead: walk forward station by station
+      for (let i = n; i < t; i++) secs += segs[i].travel_seconds;
+      stops = t - n + 1;
+    } else {
+      // Target is behind: vehicle runs to end, turns around
+      for (let i = n; i < segs.length; i++) secs += segs[i].travel_seconds;
+      for (let i = segs.length - 1; i >= t; i--) secs += segs[i].travel_seconds;
+      stops = (ids.length - 1 - n + 1) + (ids.length - 1 - t);
+    }
+  } else {
+    // Inbound direction (mirror logic)
+    // ...
+  }
+  return { secs, stops, minutes: Math.max(1, Math.round(secs / 60)) };
+}
+```
+
+The `secondsAtSpeed` helper converts a pixel distance into seconds using `net.settings.px_per_mile` and the vehicle's speed. The minimum returned ETA is always **1 minute**.
+
+### `etaMinutes(v, targetId, net)`
+
+Convenience wrapper — calls `track()` and returns only `minutes` (or `null` if unreachable).
+
+### `trackVehicle(v, targetId, net)`
+
+Returns the full `{ secs, stops, minutes }` object from `track()`.
+
+### `vehiclesTo(stationId, lineId, dirKey, net)`
+
+Returns all vehicles on a line heading in `dirKey` direction toward `stationId`, sorted soonest first:
+
+```js
+export function vehiclesTo(stationId, lineId, dirKey, net) {
+  const line = orderedLine(lineId, net);
+  if (!line) return [];
+  return (net.vehicles || [])
+    .filter(v => v.line_id === lineId && dirKeyOf(v, line) === dirKey)
+    .map(v => ({ v, ...track(v, stationId, net) }))
+    .filter(x => x.secs != null && x.minutes != null)
+    .sort((a, b) => a.secs - b.secs);
+}
+```
+
+### `departures(stationId, lineId, net)`
+
+The primary function used by the map page, line screen, and trip planner. Returns an array of direction objects (up to two — outbound and inbound), each with:
+
+| Field | Description |
+|---|---|
+| `key` | `'outbound'` or `'inbound'` |
+| `headsign` | Terminal station name |
+| `destId` | Terminal station ID |
+| `vehicles` | Full sorted vehicle list from `vehiclesTo()` |
+| `etas` | Minutes array, up to 4 entries |
+
+Directions where `destId === stationId` (i.e. the station is the terminus) are filtered out.
+
+## Vehicle icon rendering
+
+Each live vehicle is drawn by `MapView.drawVehicle()` as a layered chip:
+
+<Steps>
+  <Step title="Outer white ring">
+    A white-filled circle at `14k` radius establishes the background.
+  </Step>
+  <Step title="Coloured ring">
+    A stroke in `line.color` (or `v.color` if set) at `3.5k` line width forms the identifying colour band.
+  </Step>
+  <Step title="Black inner circle">
+    A black-filled circle at `10.5k` radius is the chip body.
+  </Step>
+  <Step title="Icon image">
+    `img/train.png` for rail, `img/bus.png` for bus — white transparent PNGs centred on the chip at `14k` width. If the image fails to load, `img/trains.png` is tried as a fallback; if that also fails, a short line-ID text label is rendered in white.
+  </Step>
+</Steps>
+
+Icon images are cached in `this._icons` by type (`'rail'` / `'bus'`). The first load triggers a canvas re-render via `img.onload`.
+
+## "Updated N seconds ago" counter
+
+The `vehicleSheet` component shows a cosmetic **"Updated N seconds ago"** line for each vehicle. This counter is deliberately not the real data age — it is designed to convey freshness without exposing the actual GPS lag:
+
+- A per-vehicle counter starts at `0` when the sheet is first shown.
+- `tickUpdated()` increments every counter each second.
+- When a counter reaches its `target` (a random value between 30 and 90 seconds), it resets to `0` and picks a new random target.
+- The counter persists across 15-second data refreshes and across reopening the same vehicle sheet.
+- `document.querySelectorAll('[data-upd]')` updates every visible counter DOM node in place on each tick.
+
+```js
+// vehiclesheet.js — cosmetic counter logic
+const counters = new Map();
+const randomTarget = () => 30 + Math.floor(Math.random() * 61);
+
+export function updatedSeconds(id) {
+  const key = String(id);
+  if (!counters.has(key)) counters.set(key, { n: 0, target: randomTarget() });
+  if (!ticker) ticker = setInterval(tickUpdated, 1000);
+  return counters.get(key).n;
+}
+
+export function tickUpdated() {
+  for (const c of counters.values()) {
+    if (c.n >= c.target) { c.n = 0; c.target = randomTarget(); } else c.n++;
+  }
+  document.querySelectorAll('[data-upd]').forEach(el => {
+    const c = counters.get(el.dataset.upd);
+    if (c) el.textContent = `${c.n} second${c.n === 1 ? '' : 's'} ago`;
+  });
+}
+```
+
+## Auto-refresh
+
+The 15-second interval in both `map-page.js` and `planner-page.js` includes a `document.hidden` check:
+
+```js
+setInterval(async () => {
+  if (document.hidden) return;   // skip while the tab is in the background
+  await refreshVehicles(net);
+  view.render();
+  // … re-render the active panel …
+}, 15000);
+```
+
+This prevents unnecessary API calls and battery drain when the user switches away from the tab.
+
+<Note>
+  The `speed_kmh` field on every vehicle object is **treated as mph**, matching the behaviour of the original City Metro site. This means the distance-to-seconds conversion (`secondsAtSpeed`) uses `speed_kmh` directly as a miles-per-hour value without unit conversion. ETAs will read slightly higher than a true km/h interpretation would produce.
+</Note>

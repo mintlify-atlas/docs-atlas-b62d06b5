@@ -1,0 +1,242 @@
+---
+title: "Interactive Transit Map: explore the City Metro network"
+sidebarTitle: "Map"
+description: "The City Metro map page renders the full transit network on an HTML Canvas, shows nearby services, and lets riders tap stations for live arrival boards."
+---
+
+The map page (`index.html`) is the default entry point for City Metro. It renders the entire transit network on an HTML Canvas, places a "you are here" pin, surfaces nearby services sorted by walking distance, and opens detailed line screens and station arrival boards — all without a page reload.
+
+## Architecture overview
+
+The map page wires together two rendering layers:
+
+- **`MapView`** (`mapview.js`) — the high-level controller. It owns the pin, the selected station, the focus line, live vehicles, and the active route. Every meaningful state change calls `view.set(state)` which triggers a canvas redraw.
+- **`CanvasMap`** (`canvas.js`) — the low-level pan/pinch/zoom engine. It handles Pointer Events for mouse, touch, and pen, fires `onDraw` on every frame, and fires `onTap` for quick single-pointer taps.
+
+```js
+// Simplified MapView construction inside boot()
+view = new MapView({
+  wrap: $('#mapWrap'),
+  canvas: $('#mapCanvas'),
+  net,
+  insets,
+  showVehicles: false,     // no individual vehicle icons on the general map
+  showWalkLinks: false,    // walk links only appear inside an open line screen
+  onStation: openStation,
+  onVehicle: v => showVehicle(v, v.line_id, lineStation),
+  onEmpty:   w => {
+    if (openId != null) closeStation();
+    if (mode !== 'nearby') backToNearby();
+    setPin({ x: w.x, y: w.y });
+  }
+});
+```
+
+## Rendering layers
+
+`MapView.draw()` paints the canvas in a strict back-to-front order so that important elements always appear on top:
+
+<Steps>
+  <Step title="Streets">
+    Each entry in `net.streets` is stroked with its own `color` (default `#D5D9E0`) at a minimum width of 5 pixels. Streets form the pale background grid.
+  </Step>
+  <Step title="Walk links (dashed)">
+    Drawn only when `showWalkLinks` is `true` **and** `map.scale > 0.5`. Each `net.walk_links` entry is a dashed line (`[4k, 5k]` dash pattern) between the two stations. Opacity is reduced when a route is active so the route stands out.
+  </Step>
+  <Step title="Line segments (coloured)">
+    Every segment in `net.segments` is stroked in `line.color`. Rail lines use a slightly thicker stroke (`5.5 × grow`) than bus lines (`4 × grow`). When a line is focused with `focusLine`, all other lines fade to 15% opacity.
+  </Step>
+  <Step title="Stations (circles)">
+    Hubs get a 9 px radius, rail stations 7 px, bus stops 4.5 px — all scaled by `grow`. Each circle is filled white with a dark `#111827` border. The selected station gains an extra blue ring (`#1d4ed8`). Station labels appear at higher zoom levels, or always when the station is on the active route.
+  </Step>
+  <Step title="Live vehicles (black chip)">
+    Each visible vehicle is drawn as a white outer ring (in `line.color`), a black inner circle, and a white `bus.png` or `train.png` icon centred on the chip. If the image fails to load, a short line-ID text label is used instead. Only the lines tracked by `vehicleLines` are drawn (see [SHOW_LIVE_ON_MAP flag](#show_live_on_map-flag) below).
+  </Step>
+  <Step title='"You are here" pin'>
+    A blue filled circle (`#1d4ed8`) with a pale blue halo (`rgba(29,78,216,.2)`) marks the current pin position.
+  </Step>
+</Steps>
+
+## The side panel and nearby services
+
+The side panel shows **"Options near"** — one tappable row per line and direction within walking distance of the current pin.
+
+`nearbyServices(pin, net, 10)` (from `arrivals.js`) works as follows:
+
+1. Finds the 10 nearest stations to the pin by Euclidean distance.
+2. Filters to those where `walkMinutes(dist, net) <= MAX_WALK_MIN` (20 minutes).
+3. For each station × line × direction, keeps only the closest stop.
+4. Returns rows sorted first by distance then by the first live ETA.
+
+Each row shows:
+- The line mark (image badge, rail badge, or bus number chip)
+- Destination headsign and station name with walk time
+- The next vehicle's ETA in minutes (if `SHOW_LIVE_ON_MAP` is `true`) or a "No live vehicle" label
+
+**Outbound / Inbound tabs** are rendered by the `Pager` component. On desktop they appear as tab buttons; on mobile you swipe between panes.
+
+## Visible-area insets
+
+Because the panel and popup cover part of the canvas, centring operations must account for the obscured area. The `insets()` function returns pixel offsets for each edge:
+
+```js
+function insets() {
+  if (wide()) {
+    // Desktop: side panel is always 420 px wide when a line is open
+    return { top: 64, right: 60, bottom: 20, left: openId != null ? 420 : 20 };
+  }
+  // Mobile: bottom inset is the panel/popup height or the peek height
+  const peek = parseInt(getComputedStyle(side).getPropertyValue('--peek')) || 300;
+  const bottom = openId != null
+    ? popup.offsetHeight
+    : side.dataset.state === 'open' ? side.offsetHeight : peek;
+  return { top: 70, right: 10, bottom: bottom + 10, left: 10 };
+}
+```
+
+`CanvasMap.fit()` and `CanvasMap.centerOn()` both call `this._visible()` which uses these insets to find the true centre of the unobscured viewport.
+
+## Station popup
+
+Tapping a station (or using a deep link) calls `openStation(s)`, which:
+
+1. Sets `openId = s.id` and shows the `#popup` element.
+2. Calls `paintPopup(s)` to build the popup HTML.
+3. Calls `view.focusStation(s, scale)` to re-centre the map.
+
+The popup contains:
+
+- Station name, type label (`Transit hub`, `Rail station`, or `Bus stop`), and street address
+- **"Directions from here"** / **"Directions to here"** links to `planner.html`
+- **"I'm here"** button — moves the pin to this station
+- **Next arrivals** pane: `stationBoard(s.id, net)` returns one entry per line, each with outbound and inbound direction objects including `etas` arrays. These are rendered inside a `Pager` (Outbound / Inbound).
+- **Lines at this station** section: a horizontal slider with one slide per line from `lineStops()`. Line chips above the slider stay in sync as you scroll.
+
+Tapping any line card or line header calls `openLine(lineId, stationId)`, which renders the full line screen.
+
+## Line screen
+
+`openLine(lineId, stationId)` replaces the side panel body with a live `renderLineScreen` instance:
+
+```js
+function openLine(lineId, stationId = null) {
+  view.set({ focusLine: lineId, showVehicles: true, vehicleLines: new Set([lineId]), tracked: null });
+  view.fitLine(lineId);
+  lineCtl = renderLineScreen(body, {
+    net, lineId, stationId, backLabel: 'Nearby',
+    onBack:      backToNearby,
+    onStation:   openStation,
+    onShowMap:   () => view.fitLine(lineId),
+    onVehicle:   v => showVehicle(v, lineId, stationId)
+  });
+  history.replaceState(null, '', `?line=${encodeURIComponent(lineId)}`);
+}
+```
+
+While a line screen is open, `showVehicles: true` and `vehicleLines` is set to a single-element `Set` so only that line's vehicles appear on the map.
+
+## Map controls
+
+<CardGroup cols={3}>
+  <Card title="Zoom in (+)" icon="plus">
+    Calls `view.map.zoomAt(1.3)` — scales by 1.3× centred on the canvas midpoint.
+  </Card>
+  <Card title="Zoom out (−)" icon="minus">
+    Calls `view.map.zoomAt(1 / 1.3)` — scales by ≈ 0.77× centred on the canvas midpoint.
+  </Card>
+  <Card title='Fit all (⤢)' icon="expand">
+    Calls `view.fitAll()`, which fits all station coordinates with `maxScale: 1` and 40 px padding. Also clears any active `focusLine`.
+  </Card>
+</CardGroup>
+
+Scroll-wheel zoom and two-finger pinch are handled natively by `CanvasMap`.
+
+## Deep linking
+
+Two query parameters pre-populate the map on load:
+
+| Parameter | Effect |
+|---|---|
+| `?line=<id>` | Immediately opens the line screen for that line ID |
+| `?station=<id>` | Immediately opens the station popup for that station ID |
+
+Both are read inside `boot()` after the network loads:
+
+```js
+const q = new URLSearchParams(location.search);
+if (q.get('line') && net.linesById[q.get('line')])
+  openLine(q.get('line'));
+else if (q.get('station') && net.stationsById[q.get('station')])
+  openStation(net.stationsById[q.get('station')]);
+```
+
+As you navigate, `history.replaceState` keeps the URL in sync so the browser back button and shared links both work.
+
+## Live vehicle refresh
+
+A `setInterval` fires every **15 seconds** while the tab is visible:
+
+```js
+setInterval(async () => {
+  if (document.hidden) return;
+  try {
+    await refreshVehicles(net);
+    view.render();
+    if (mode === 'nearby')       renderNearby(true);
+    else if (mode === 'line' && lineCtl)   lineCtl.refresh();
+    else if (mode === 'vehicle' && vehCtx) renderVehiclePanel();
+    if (openId != null) paintPopup(net.stationsById[openId]);
+  } catch { /* keep last good data */ }
+}, 15000);
+```
+
+`refreshVehicles(net)` fetches `GET /api/live` and replaces `net.vehicles` in place so every downstream function automatically sees fresh data on its next call.
+
+## SHOW_LIVE_ON_MAP flag
+
+The `SHOW_LIVE_ON_MAP` constant (defined in `config.js`, default `true`) controls whether the next-vehicle ETA chip appears in nearby-service rows and station popup tiles.
+
+<Note>
+  On the general map view `showVehicles` is always initialised to `false`, so **individual vehicle icons never appear on the map unless a line screen is open**. When you tap a line and its screen slides in, `view.set({ showVehicles: true, vehicleLines: new Set([lineId]) })` enables rendering for that one line only. Closing the line screen calls `view.set({ showVehicles: false, vehicleLines: null })` to restore the clean map.
+</Note>
+
+## Full boot sequence
+
+```js
+async function boot() {
+  // 1. Load the network (stations, lines, segments, streets, walk links, settings)
+  net = await loadNetwork();
+
+  // 2. Create the MapView (CanvasMap inside)
+  view = new MapView({ wrap, canvas, net, insets,
+    showVehicles: false, showWalkLinks: false,
+    onStation: openStation,
+    onVehicle: v => showVehicle(v, v.line_id, lineStation),
+    onEmpty:   w => { /* move pin */ }
+  });
+
+  // 3. Wire up zoom controls
+  $('#zoomIn').onclick  = () => view.map.zoomAt(1.3);
+  $('#zoomOut').onclick = () => view.map.zoomAt(1 / 1.3);
+  $('#zoomFit').onclick = () => { view.set({ focusLine: null }); view.fitAll(); };
+
+  // 4. Place the initial pin (Union Station, first hub, or network centre)
+  const union = net.stations.find(s => /union/i.test(s.name))
+             || net.stations.find(s => s.type === 'hub')
+             || net.stations[0];
+  pin = union ? { x: union.x, y: union.y } : /* network centre */;
+  homePin = { ...pin }; homeName = union ? union.name : 'the network';
+  view.set({ pin });
+  renderNearby();
+  view.focusAt(pin.x, pin.y, 0.9);
+
+  // 5. Handle deep links
+  const q = new URLSearchParams(location.search);
+  if (q.get('line'))    openLine(q.get('line'));
+  else if (q.get('station')) openStation(net.stationsById[q.get('station')]);
+
+  // 6. Start the 15-second live refresh loop
+  setInterval(async () => { /* ... */ }, 15000);
+}
+boot();
+```

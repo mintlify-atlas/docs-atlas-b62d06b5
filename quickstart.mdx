@@ -1,47 +1,99 @@
 ---
-title: "Quickstart"
-description: "Begin with a guide on the fastest path to a successful outcome"
+title: "Get started with City Metro Trip Planner"
+sidebarTitle: "Quickstart"
+description: "Clone the repo, install Wrangler, and serve the City Metro Trip Planner locally — then make your first live API call in under five minutes."
 ---
 
-Describe how someone begins using your product. What is the first thing they need to do? Are there any prerequisites?
+City Metro Trip Planner has no build step and no local backend to run. The `pages/` directory is plain HTML, CSS, and ES modules; Wrangler serves them exactly as Cloudflare Workers does in production. All network data — the full transit graph, live vehicle positions, and journey plans — comes from the live API at `https://api.trip-planner.citymetro.xyz`, so the app is fully functional the moment the dev server starts.
 
-A quickstart should take someone from zero to using your product. They'll get a quick win and a sense of what they can accomplish.
+<Note>
+  `/api/network`, `/api/plan`, and `/api/live` all work unauthenticated for read-only access — no account needed to browse the map or plan a trip. Saving journeys to an account requires a Bearer token obtained by signing in through City Metro's identity provider.
+</Note>
 
-## Prerequisites
-
-Before you begin, you must have:
-
-- Requirement one (for example, Node.js 18+, a free account, an API key)
-- Requirement two (for example, a compatible device, a compatible browser, a compatible operating system)
-
-## Get started
+## Steps
 
 <Steps>
-  <Step title="Install">
-    Describe how to install your product or sign up.
+  <Step title="Check prerequisites">
+    You need the following tools before you begin:
+
+    - **Node.js 18 or later** — Wrangler requires it. Check your version:
+      ```bash
+      node --version
+      ```
+    - **A Cloudflare account** — the free tier is sufficient. Sign up at [cloudflare.com](https://cloudflare.com) if you don't have one yet.
+    - **Git** — to clone the repository.
+
+  </Step>
+  <Step title="Clone the repository">
+    ```bash
+    git clone https://github.com/City-Metro/mobiletripplanner-v3
+    cd mobiletripplanner-v3
+    ```
+
+    The repo contains no `node_modules` and no generated files — just the `pages/` directory and `wrangler.toml`. There is nothing to install locally for the app itself.
+  </Step>
+  <Step title="Install Wrangler">
+    Wrangler is Cloudflare's official CLI. Install it globally so the `wrangler` command is available everywhere:
 
     ```bash
-    npm install your-package
+    npm install -g wrangler
+    ```
+
+    Then authenticate with your Cloudflare account (opens a browser window):
+
+    ```bash
+    wrangler login
     ```
   </Step>
-  <Step title="Configure">
-    Describe any setup or configuration needed before first use.
+  <Step title="Start the local dev server">
+    From the root of the repo (where `wrangler.toml` lives), run:
 
     ```bash
-    your-cli init
+    wrangler dev
+    ```
+
+    Wrangler reads `wrangler.toml`, finds `assets = { directory = "./pages", html_handling = "auto-trailing-slash" }`, and starts serving the `pages/` directory. You should see output like:
+
+    ```
+    ⛅️ wrangler 3.x.x
+    ------------------
+    ⎔ Starting local server...
+    [wrangler:info] Ready on http://localhost:8787
     ```
   </Step>
-  <Step title="Run it">
-    Show the first thing a user does to see it working.
+  <Step title="Open the app">
+    Navigate to [http://localhost:8787](http://localhost:8787) in your browser.
+
+    The map page (`pages/index.html`) loads immediately. Within a second or two it fetches the full network from `https://api.trip-planner.citymetro.xyz/api/network` and renders all lines and stations on the canvas. Tap any station chip to see the next arrivals.
+
+    To open the trip planner, go to [http://localhost:8787/planner](http://localhost:8787/planner) or click the **"Where to?"** pill on the map.
+  </Step>
+  <Step title="Make your first live API call">
+    The `/api/network` endpoint returns the complete transit graph — all lines, stations, segments, streets, and walking links — in a single JSON response. You can call it directly from the browser console, a script, or a terminal.
+
+    **JavaScript (browser console or Node.js):**
+
+    ```js
+    const res = await fetch('https://api.trip-planner.citymetro.xyz/api/network');
+    const net = await res.json();
+    console.log('Lines:', net.lines.map(l => l.name));
+    console.log('Stations:', net.stations.length);
+    ```
+
+    **curl:**
 
     ```bash
-    your-cli start
+    curl https://api.trip-planner.citymetro.xyz/api/network | jq '{lines: [.lines[].name], station_count: (.stations | length)}'
     ```
+
+    A successful response lists every line by name and shows the total number of stations in the network — confirming the API is reachable and the data is live.
   </Step>
 </Steps>
 
-<Tip>
-  Give people a way to get help. This could be a link to a support page, a chat with a customer support agent, or a forum for your product.
+## What's next?
 
-  Example: Need help? Reach out to us at [support@yourcompany.com](mailto:support@yourcompany.com).
-</Tip>
+Now that the app is running locally you can explore the rest of the documentation:
+
+- **[Map page →](/features/map)** — understand how `js/map-page.js` drives the canvas and polls `/api/live` for vehicle positions.
+- **[Trip planner →](/features/trip-planner)** — see how `js/planner-page.js` calls `/api/plan` with origin, destination, and routing mode.
+- **[Deployment →](/deployment)** — when you're ready to go live, `wrangler deploy` publishes the app to Cloudflare Workers in seconds.

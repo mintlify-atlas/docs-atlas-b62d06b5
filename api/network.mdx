@@ -1,0 +1,126 @@
+---
+title: "GET /api/network — fetch the full transit network"
+sidebarTitle: "GET /api/network"
+description: "GET /api/network returns the complete City Metro network: lines, stations, segments, streets, walk links, and settings. No authentication required."
+---
+
+`GET /api/network` is the single call that bootstraps everything the City Metro app needs — the full map, the trip planner, and the live arrivals board all depend on the data it returns. Because the payload is large and rarely changes during a session, the client-side `loadNetwork()` helper caches the in-flight promise so the server is only contacted once per page load.
+
+## Endpoint
+
+| Property       | Value                                                        |
+| -------------- | ------------------------------------------------------------ |
+| **Method**     | `GET`                                                        |
+| **URL**        | `https://api.trip-planner.citymetro.xyz/api/network`         |
+| **Auth**       | None required                                                |
+| **Rate limit** | No hard limit — results are intended to be cached per session |
+
+## Response fields
+
+<ResponseField name="lines" type="array" required>
+  All transit lines in the network. Each element describes one line's identity, colour, type (`rail` or `bus`), and display metadata.
+</ResponseField>
+
+<ResponseField name="stations" type="array" required>
+  Every station and bus stop in the network, including their coordinate positions (`x`, `y`), display name, street address hint, and a comma-separated `line_ids` string listing the lines that serve them.
+</ResponseField>
+
+<ResponseField name="segments" type="array" required>
+  Route segments that make up each line's physical path on the map. Each segment records the origin station (`from_station_id`), destination station (`to_station_id`), direction (`'both'` or a single direction), sequence order (`seq_order`), scheduled travel time (`travel_seconds`), and a `points_json` string that is parsed into a `pts` array of `[x, y]` coordinate pairs after indexing.
+</ResponseField>
+
+<ResponseField name="streets" type="array" required>
+  Background street polylines rendered beneath the transit network on the map canvas. Each street has a `name` and a `points_json` string (parsed into `pts` after indexing) that defines its path.
+</ResponseField>
+
+<ResponseField name="walk_links" type="array" required>
+  Walking connections between nearby stations at different lines. Each entry has two station IDs (`a` and `b`), a walk time in seconds (`seconds`), and a distance in miles (`miles`). Links are bidirectional — the indexer adds both directions to `net.walkFrom`.
+</ResponseField>
+
+<ResponseField name="settings" type="object" required>
+  Global constants used for ETA calculations and map rendering throughout the app.
+
+  <Expandable title="settings fields">
+    <ResponseField name="settings.px_per_mile" type="number" required>
+      The number of network coordinate pixels that represent one real-world mile. Used whenever the app converts a pixel distance (e.g. the gap between a vehicle's current position and the next station) into a travel-time estimate.
+    </ResponseField>
+
+    <ResponseField name="settings.walk_mph" type="number" required>
+      Assumed pedestrian walking speed in miles per hour. Applied to all walk-leg duration estimates in the trip planner and to the "nearby services" distance filter.
+    </ResponseField>
+
+    <ResponseField name="settings.transfer_penalty_sec" type="number" required>
+      A fixed number of seconds added to a route's total time for each transit-to-transit transfer. Used both in the planner's route comparison and in the detail-view "allow about N min to board" transfer notice.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+## Client-side indexing
+
+After the raw JSON arrives, `loadNetwork()` passes it through `indexNetwork()`, which decorates the object with several derived indexes before handing it to the rest of the app:
+
+| Added property       | Type     | Description                                                                                                     |
+| -------------------- | -------- | --------------------------------------------------------------------------------------------------------------- |
+| `linesById`          | `object` | `{ [line.id]: line }` — O(1) line lookup used throughout the planner and map.                                   |
+| `stationsById`       | `object` | `{ [station.id]: station }` — O(1) station lookup by numeric ID.                                               |
+| `segsByLine`         | `object` | `{ [line_id]: segment[] }` — segments pre-grouped by line, sorted by `seq_order` when needed by `arrivals.js`. |
+| `walkFrom`           | `object` | `{ [station_id]: [{id, seconds, miles}] }` — bidirectional walk-link adjacency list.                           |
+| `seg.pts`            | `array`  | Each segment's `points_json` is parsed into `[[x,y],…]` so the map canvas never re-parses it.                 |
+| `street.pts`         | `array`  | Each street's `points_json` is parsed identically.                                                              |
+| `station.lineIds`    | `array`  | The raw comma-separated `line_ids` string is split into a proper string array.                                  |
+
+<Note>
+  `loadNetwork()` is a singleton. Calling it multiple times within a page session returns the same cached promise — the network is only fetched from the server once. Pass `force = true` to bypass the cache and re-fetch (e.g. after a long idle period): `loadNetwork(true)`.
+</Note>
+
+## Examples
+
+### curl
+
+```bash
+curl https://api.trip-planner.citymetro.xyz/api/network
+```
+
+### JavaScript
+
+```js
+import { loadNetwork } from './js/api.js';
+
+const net = await loadNetwork();
+console.log(net.lines.length, 'lines,', net.stations.length, 'stations');
+```
+
+### Example response (abbreviated)
+
+```json
+{
+  "lines": [
+    { "id": "A", "name": "A Line", "color": "#0057b8", "text_color": "#ffffff", "type": "rail" }
+  ],
+  "stations": [
+    { "id": 1, "name": "Union Station", "x": 412, "y": 308, "line_ids": "A,720", "type": "station" }
+  ],
+  "segments": [
+    {
+      "line_id": "A",
+      "from_station_id": 1,
+      "to_station_id": 2,
+      "seq_order": 0,
+      "direction": "both",
+      "travel_seconds": 120,
+      "points_json": "[[412,308],[450,310],[480,315]]"
+    }
+  ],
+  "streets": [
+    { "name": "Main St", "points_json": "[[100,200],[200,200],[300,210]]" }
+  ],
+  "walk_links": [
+    { "a": 1, "b": 5, "seconds": 180, "miles": 0.09 }
+  ],
+  "settings": {
+    "px_per_mile": 320,
+    "walk_mph": 3,
+    "transfer_penalty_sec": 120
+  }
+}
+```

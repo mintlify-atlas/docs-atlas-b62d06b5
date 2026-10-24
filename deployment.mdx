@@ -1,0 +1,94 @@
+---
+title: "Deploy City Metro Trip Planner to Cloudflare Workers"
+sidebarTitle: "Deployment"
+description: "Deploy the City Metro Trip Planner as a Cloudflare Workers static site using wrangler deploy. Covers wrangler.toml configuration and the pages/ asset directory."
+---
+
+City Metro Trip Planner deploys as a Cloudflare Workers static site — Wrangler uploads every file inside `pages/` to Cloudflare's network and a lightweight Worker serves them from the edge. Because the app is entirely client-side HTML, CSS, and ES modules with no server-side logic, the deployment is a single command with zero runtime configuration.
+
+## `wrangler.toml` configuration
+
+All deployment settings live in `wrangler.toml` at the root of the repository. Here is the complete file:
+
+```toml
+name = "mobiletripplanner-v3"
+compatibility_date = "2026-10-01"
+
+# Serves static files directly from your ./pages directory
+# pages/index.html     -> /
+# pages/css/app.css    -> /css/app.css
+# pages/js/map-page.js -> /js/map-page.js
+assets = { directory = "./pages", html_handling = "auto-trailing-slash" }
+```
+
+### Configuration fields
+
+| Field | Value | Purpose |
+|---|---|---|
+| `name` | `mobiletripplanner-v3` | The Workers script name as it appears in the Cloudflare dashboard |
+| `compatibility_date` | `2026-10-01` | Locks Workers runtime behaviour to a specific API version |
+| `assets.directory` | `./pages` | The local directory whose contents are uploaded as static assets |
+| `assets.html_handling` | `auto-trailing-slash` | Cloudflare automatically resolves `/planner` → `planner.html` and handles trailing-slash redirects |
+
+## How `pages/` maps to URLs
+
+The `assets.directory = "./pages"` setting means every file under `pages/` is served relative to the site root. The `html_handling = "auto-trailing-slash"` mode strips `.html` extensions and normalises trailing slashes.
+
+| File on disk | Served at URL |
+|---|---|
+| `pages/index.html` | `/` |
+| `pages/planner.html` | `/planner` |
+| `pages/auth-callback.html` | `/auth-callback` |
+| `pages/css/app.css` | `/css/app.css` |
+| `pages/js/api.js` | `/js/api.js` |
+| `pages/js/config.js` | `/js/config.js` |
+| `pages/js/map-page.js` | `/js/map-page.js` |
+| `pages/js/planner-page.js` | `/js/planner-page.js` |
+| `pages/img/train.png` | `/img/train.png` |
+
+No rewrite rules or custom routes are needed — the file structure in `pages/` is the URL structure of the deployed app.
+
+## Deploy to production
+
+From the repository root, run:
+
+```bash
+wrangler deploy
+```
+
+Wrangler bundles and uploads everything in `pages/` and deploys the Worker. On success, the CLI prints the live URL:
+
+```
+⛅️ wrangler 3.x.x
+Uploaded mobiletripplanner-v3 (x.xx sec)
+Deployed mobiletripplanner-v3 triggers (x.xx sec)
+  https://mobiletripplanner-v3.<your-subdomain>.workers.dev
+```
+
+The app is immediately live at that URL. You can also bind a custom domain through the Cloudflare dashboard under **Workers & Pages → mobiletripplanner-v3 → Settings → Domains & Routes**.
+
+## Run locally before deploying
+
+```bash
+wrangler dev
+```
+
+`wrangler dev` starts a local server (default `http://localhost:8787`) that mirrors production behaviour exactly — same asset routing, same `html_handling` rules. The app fetches all data from the live API at `https://api.trip-planner.citymetro.xyz`, so local and production are functionally identical.
+
+<Tip>
+  If you want automatic preview deployments on every pull request, consider migrating to **Cloudflare Pages**. Cloudflare Pages wraps the same static-asset infrastructure but adds a GitHub/GitLab integration that publishes a unique preview URL for each PR — useful for reviewing UI changes before they reach production. The `wrangler.toml` configuration and the `pages/` directory remain unchanged; you just connect the repo in the Cloudflare dashboard instead of running `wrangler deploy` manually.
+</Tip>
+
+## Security considerations
+
+The Worker serves only static files. There is no secret, environment variable, or database connection inside the Worker itself — there is nothing to leak from the deployment.
+
+All dynamic data (network graph, live vehicles, journey planning, saved trips) comes from the separate backend service at `https://api.trip-planner.citymetro.xyz`, which is operated independently by City Metro. The `API_BASE` constant in `js/config.js` is the only coupling between the static frontend and the backend:
+
+```js
+export const API_BASE = 'https://api.trip-planner.citymetro.xyz';
+```
+
+<Warning>
+  If you fork the repository and point `API_BASE` at your own backend, ensure your backend sets the correct `Access-Control-Allow-Origin` CORS headers. The default City Metro API is configured for the official deployment origin and will reject cross-origin requests from unrecognised domains.
+</Warning>

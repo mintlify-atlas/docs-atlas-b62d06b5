@@ -1,0 +1,109 @@
+---
+title: "Application settings in config.js"
+sidebarTitle: "App Settings"
+description: "All client-side configuration for City Metro Trip Planner lives in config.js. Change API_BASE, VEHICLE_ICONS, MODES, SHOW_LIVE_ON_MAP, and AUTH_ORIGIN here."
+---
+
+`config.js` is the single source of truth for every client-side constant in the City Metro Trip Planner. Rather than scattering magic strings across the codebase, every module that needs the API address, icon paths, route modes, or auth URL imports from this one file. To change how the front-end behaves — in development, staging, or production — this is the only file you need to edit.
+
+## Full file listing
+
+```js
+// The only place the API address lives. Same Worker URL as the old site.
+export const API_BASE = 'https://api.trip-planner.citymetro.xyz';
+
+// Live-vehicle icons (white, transparent PNGs — drawn on a black chip). Every live vehicle uses these.
+// Rail uses train.png (trains.png is still tried as a fallback); buses use bus.png.
+export const VEHICLE_ICONS = { rail: ['img/train.png', 'img/trains.png'], bus: ['img/bus.png'] };
+
+export const MODES = [
+  { id: 'fastest', label: 'Fastest', short: 'Fastest' },
+  { id: 'fewest_transfers', label: 'Fewest transfers', short: 'Transfers' },
+  { id: 'fewest_walking', label: 'Least walking', short: 'Walking' }
+];
+
+// The map page shows only the NEXT vehicle per nearby service / station (with the live icon).
+// The full live board, vehicle sheet, alerts and walking connections live on the line screen and trip guide.
+export const SHOW_LIVE_ON_MAP = true;
+
+// Where people sign in (Authentik). Used for the "Manage account" link.
+export const AUTH_ORIGIN = 'https://auth.citymetro.xyz';
+```
+
+## Exported constants
+
+### `API_BASE`
+
+<ParamField path="API_BASE" type="string" default="'https://api.trip-planner.citymetro.xyz'">
+  The base URL prepended to every backend request. `api.js` imports this constant and prefixes it onto every `fetch` call — including `/api/network`, `/api/live`, `/api/plan`, and the OAuth login redirect. There is no other place in the codebase where the API hostname is hardcoded.
+</ParamField>
+
+<Tip>
+  Set `API_BASE` to `http://localhost:3000` to wire the front-end to a local backend. No other file needs to change — every `api()` call and `Auth.login()` redirect will automatically resolve against your local server.
+</Tip>
+
+---
+
+### `VEHICLE_ICONS`
+
+<ParamField path="VEHICLE_ICONS" type="{ rail: string[], bus: string[] }">
+  A map from vehicle type to an ordered list of icon image paths. The rendering layer tries each path in array order; if a path fails to load it moves to the next. If every path fails, the UI falls back to a signal SVG icon.
+
+  | Key | Paths tried in order | Fallback |
+  |-----|----------------------|----------|
+  | `rail` | `img/train.png` | `img/trains.png` (legacy filename), then SVG signal icon |
+  | `bus` | `img/bus.png` | SVG signal icon |
+
+  All image files live under `pages/img/`. Icons are white transparent PNGs rendered on a black chip on the map and in the nearby-services panel.
+</ParamField>
+
+---
+
+### `MODES`
+
+<ParamField path="MODES" type="{ id: string, label: string, short: string }[]">
+  The ordered list of trip-planning modes shown as tabs in the planner UI. Each entry has three fields:
+
+  | Field | Purpose |
+  |-------|---------|
+  | `id` | Sent as the `mode` query parameter to `/api/plan` |
+  | `label` | Full text shown in the mode tab |
+  | `short` | Abbreviated text used in compact/mobile layouts |
+
+  The three built-in entries are:
+
+  | `id` | `label` | `short` |
+  |------|---------|---------|
+  | `fastest` | Fastest | Fastest |
+  | `fewest_transfers` | Fewest transfers | Transfers |
+  | `fewest_walking` | Least walking | Walking |
+</ParamField>
+
+<Note>
+  The `id` values — `fastest`, `fewest_transfers`, and `fewest_walking` — are fixed keys defined by the `/api/plan` response. The backend uses these exact strings to key the routes it returns. Changing any `id` here will break route rendering because the planner will look for a key in the response that no longer exists.
+</Note>
+
+---
+
+### `SHOW_LIVE_ON_MAP`
+
+<ParamField path="SHOW_LIVE_ON_MAP" type="boolean" default="true">
+  Controls whether live vehicle ETAs and icons are shown in the nearby-services panel on `index.html`.
+
+  | Value | Behaviour |
+  |-------|-----------|
+  | `true` | The nearby-services list fetches live vehicle data and renders ETA chips next to each service |
+  | `false` | The nearby-services list renders without any ETA data |
+
+  This flag applies **only** to the ETA chips in the side panel. The map view always hides individual vehicle dots — that is controlled separately by `showVehicles: false` in the `MapView` constructor and is not affected by this setting.
+</ParamField>
+
+---
+
+### `AUTH_ORIGIN`
+
+<ParamField path="AUTH_ORIGIN" type="string" default="'https://auth.citymetro.xyz'">
+  The base URL of the Authentik identity provider. Currently used for the **Manage account** link in the account dialog, which opens the Authentik self-service portal for the signed-in user.
+
+  If you are self-hosting City Metro with a different Authentik instance (or a different OIDC provider that exposes a compatible account portal), update this value to match your provider's origin. The OAuth login flow itself is initiated through the backend API via `API_BASE`; `AUTH_ORIGIN` is used only for this account-management deep-link.
+</ParamField>

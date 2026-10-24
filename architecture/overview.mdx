@@ -1,0 +1,142 @@
+---
+title: "Architecture overview: how City Metro Trip Planner works"
+sidebarTitle: "Overview"
+description: "City Metro Trip Planner is a static ES-module app served from Cloudflare Workers. Two entry points share a network data singleton, a canvas renderer, and a live-vehicle refresh loop."
+---
+
+City Metro Trip Planner is a framework-free web application built entirely from vanilla JavaScript ES modules, HTML Canvas, and CSS custom properties. Cloudflare Workers serves every asset as a static file — there is no server-side rendering, no build step, and no JavaScript framework. Two HTML pages share a common set of modules for network data, map rendering, arrival calculations, and UI components.
+
+## Entry points
+
+The app has two HTML pages, each loading a single ES module as its entry point:
+
+| Page | File | Purpose |
+|---|---|---|
+| `index.html` | `map-page.js` | Interactive transit map with nearby-services panel and station popups |
+| `planner.html` | `planner-page.js` | Step-by-step trip planner with route options, live arrivals, and turn-by-turn navigation |
+
+Both pages are served by a single Cloudflare Worker configured via `wrangler.toml`:
+
+```toml
+name = "mobiletripplanner-v3"
+compatibility_date = "2026-10-01"
+
+# Serves static files directly from your ./pages directory
+# pages/index.html     -> /
+# pages/css/app.css    -> /css/app.css
+# pages/js/map-page.js -> /js/map-page.js
+assets = { directory = "./pages", html_handling = "auto-trailing-slash" }
+```
+
+The `assets` directive maps the `./pages` directory to the Worker's URL space. No routing logic is needed — the Worker acts purely as a CDN edge for static files.
+
+## Network data singleton
+
+All map and planner data originates from a single HTTP request to `/api/network`. The `loadNetwork()` function in `api.js` caches its result in a module-level `pending` promise so that only one fetch ever fires per page load, no matter how many components call it:
+
+```js
+let pending = null;
+export function loadNetwork(force = false) {
+  if (!pending || force) pending = api('/api/network').then(indexNetwork).catch(e => { pending = null; throw e; });
+  return pending;
+}
+```
+
+Once the raw network response arrives, `indexNetwork()` processes it into a richer `net` object with precomputed lookup maps (`linesById`, `stationsById`, `segsByLine`) and a walking-connection adjacency list (`walkFrom`). Every module that receives `net` is working with the same indexed, in-memory object.
+
+## Data flow
+
+```
+/api/network
+     │
+     ▼
+  api.js → indexNetwork() → net object
+                               │
+               ┌───────────────┼────────────────┐
+               ▼               ▼                ▼
+           MapView         arrivals.js      linescreen.js
+        (canvas render)   (ETA maths)      (stop lists)
+               │
+               ▼
+           CanvasMap
+        (pan / zoom / draw)
+```
+
+1. `api.js` fetches `/api/network` once and returns an indexed `net` object.
+2. `net` is passed to `MapView`, which renders the network on an HTML Canvas element.
+3. `arrivals.js` pure functions operate on `net` to compute ETAs, direction keys, and nearby services.
+4. `linescreen.js` and `vehiclesheet.js` render live-data panels using the same `net` reference.
+
+## Live vehicle refresh
+
+Both pages run a 15-second `setInterval` loop that calls `refreshVehicles(net)`, which fetches `/api/live` and mutates `net.vehicles` in place. After each successful fetch the active view is re-rendered:
+
+```js
+setInterval(async () => {
+  if (document.hidden) return;
+  try {
+    await refreshVehicles(net);
+    view.render();
+    // re-render whichever panel is currently visible
+  } catch { /* keep last good data */ }
+}, 15000);
+```
+
+<Note>
+  The `document.hidden` guard is checked at the very start of every interval callback. If the browser tab is backgrounded — minimised, covered by another tab, or in a background PWA context — the fetch is skipped entirely. No network requests are made and no re-renders happen until the user returns to the tab. This keeps battery and data usage low on mobile devices.
+</Note>
+
+## Rendering: no framework, just Canvas
+
+The map is drawn entirely with the HTML Canvas 2D API. There is no SVG, no WebGL, and no mapping library. The rendering pipeline is:
+
+<Steps>
+  <Step title="CanvasMap handles input and transforms">
+    `canvas.js` listens for Pointer Events (mouse, touch, pen) to implement pan, pinch-zoom, and wheel zoom. It maintains a world-to-screen transform (`scale`, `ox`, `oy`) and fires `onDraw` inside a `requestAnimationFrame` callback whenever the view changes.
+  </Step>
+  <Step title="MapView draws the network">
+    `mapview.js` receives the `onDraw` callback and renders layers in order: streets → walk links → line segments → highlighted route → stations → live vehicles → the "you are here" pin. Each layer reads directly from `net`.
+  </Step>
+  <Step title="ResizeObserver keeps the map responsive">
+    A `ResizeObserver` on the map wrapper element fires whenever the container size changes (desktop panel opens, mobile sheet slides up). The canvas DPI and transform are recalculated, and the `onResize` callback triggers a re-centre.
+  </Step>
+</Steps>
+
+## Backend
+
+All API calls target a separate service at `https://api.trip-planner.citymetro.xyz` (the `API_BASE` constant in `config.js`). The front-end never knows or cares about the backend's implementation — it calls endpoints over HTTPS and receives JSON. Authentication uses a Bearer token stored in `localStorage`; the OAuth flow is handled server-side at `https://auth.citymetro.xyz`.
+
+## Module dependency graph
+
+The following diagram shows which modules import which. `arrivals.js` is the only module with no local imports — all its functions are pure data transforms.
+
+```
+map-page.js
+  ├── api.js
+  ├── config.js
+  ├── ui.js
+  ├── mapview.js
+  │     ├── canvas.js
+  │     ├── ui.js
+  │     └── config.js
+  ├── linescreen.js
+  │     ├── api.js
+  │     ├── ui.js
+  │     ├── arrivals.js
+  │     └── vehiclesheet.js
+  ├── vehiclesheet.js
+  │     ├── ui.js
+  │     └── arrivals.js
+  └── arrivals.js        (no local imports)
+
+planner-page.js
+  ├── api.js
+  ├── config.js
+  ├── ui.js
+  ├── mapview.js
+  ├── arrivals.js
+  ├── vehiclesheet.js
+  └── linescreen.js
+```
+
+`ui.js` sits at the base of the stack: it imports only `api.js` and `config.js`, while every other module imports from it. This keeps the dependency graph shallow and avoids circular imports.

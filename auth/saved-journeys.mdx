@@ -1,0 +1,128 @@
+---
+title: "Save and manage journeys with a City Metro account"
+sidebarTitle: "Saved Journeys"
+description: "Signed-in riders can save trips to their City Metro account and access them across devices. Journeys are stored server-side and managed via the /api/journeys endpoint."
+---
+
+Every planned trip in City Metro generates a shareable URL (`/planner.html?from=<id>&to=<id>`) that works for anyone. Signing in takes this further — your trips are saved to your account on the server, so the same list appears whether you're on your phone on the platform or on a desktop at home.
+
+## Prerequisites
+
+Saving journeys requires an active session. Before calling any `/api/journeys` endpoint, check `Auth.loggedIn`:
+
+```js
+if (!Auth.loggedIn) {
+  toast('Sign in to save journeys');
+  return;
+}
+```
+
+If the check fails, the planner surfaces a toast notification and opens the account dialog so the user can sign in without leaving the page.
+
+## API endpoints
+
+<CardGroup cols={3}>
+  <Card title="GET /api/journeys" icon="list">
+    Returns an array of all journeys saved to the signed-in account. Each item includes at minimum `id`, `name`, `from_station_id`, and `to_station_id`.
+  </Card>
+  <Card title="POST /api/journeys" icon="floppy-disk">
+    Saves a new journey. The request body must be JSON with `from_station_id`, `to_station_id`, `from_name`, and `to_name`.
+  </Card>
+  <Card title="DELETE /api/journeys/:id" icon="trash">
+    Permanently removes a single saved journey by its `id`. No body is required.
+  </Card>
+</CardGroup>
+
+All three endpoints require an `Authorization: Bearer <token>` header, which the `api()` wrapper adds automatically when `Auth.loggedIn` is true.
+
+## Saving a journey
+
+The **Save** button appears in the route guide footer after a trip has been planned. The save handler in `planner-page.js` checks authentication, then posts the station IDs and human-readable names to the server:
+
+```js
+// Save a journey after a trip is planned
+if (!Auth.loggedIn) {
+  toast('Sign in to save journeys');
+  return;
+}
+const res = await api('/api/journeys', {
+  method: 'POST',
+  body: JSON.stringify({
+    from_station_id: S.from.id,
+    to_station_id: S.to.id,
+    from_name: S.from.name,
+    to_name: S.to.name
+  })
+});
+```
+
+On success the planner fires a `'Journey saved'` toast. Errors (network failure, expired token, etc.) surface the server's error message via the same toast component.
+
+The **Save this journey** button also appears on the **Journey complete** screen (`renderDone`), so riders can save a trip they've just completed.
+
+## The account dialog
+
+Tapping the City Metro logo in the navbar opens the account dialog. When the user is signed in, `renderUserView()` in `ui.js` renders the full account view:
+
+```
+┌─────────────────────────────────┐
+│  Alex Johnson                   │
+│  alex@example.com               │
+│                                 │
+│  SAVED JOURNEYS                 │
+│  ┌──────────────────────────┐   │
+│  │ Central → Airport  ╳    │   │
+│  │ Home → City Hall   ╳    │   │
+│  └──────────────────────────┘   │
+│                                 │
+│  [ Plan a new trip          ]   │
+│  [ Manage account    ↗      ]   │
+│  [ Sign out                 ]   │
+└─────────────────────────────────┘
+```
+
+Each saved journey in the list is a link to `/planner.html?from=<from_station_id>&to=<to_station_id>` that re-runs the trip plan instantly. A delete button (×) next to each row calls `DELETE /api/journeys/:id` and re-renders the list in place.
+
+The **Manage account** button links to `https://auth.citymetro.xyz/if/user/` (Authentik's self-service portal) where users can update their profile or manage connected applications.
+
+### Loading and error states
+
+The saved journeys list is fetched every time the account dialog is opened. While the `GET /api/journeys` request is in flight, the list area shows **"Loading…"**.
+
+If the request fails with a `401` — meaning the session expired while the dialog was closed — the `api()` wrapper calls `Auth.clear()` automatically, and `renderUserView()` detects that `Auth.loggedIn` is now `false` and calls `renderAccount()` to switch back to the sign-in form:
+
+```js
+try {
+  const rows = await api('/api/journeys');
+  // render the list…
+} catch (e) {
+  box.innerHTML = `<p class="muted">${esc(e.message)}</p>`;
+  if (!Auth.loggedIn) renderAccount(); // session expired → show sign-in form
+}
+```
+
+Any other error (network failure, server error) shows the error message inside the list area without signing the user out.
+
+### Signing out
+
+The **Sign out** button calls `Auth.clear()` and immediately re-renders the account dialog body as the sign-in form — no page reload required:
+
+```js
+$('#signOut').onclick = () => { Auth.clear(); renderAccount(); };
+```
+
+`Auth.clear()` removes both `cm_token` and `cm_user` from `localStorage`. Subsequent calls to `Auth.loggedIn` return `false` and `api()` stops sending the `Authorization` header.
+
+## Saved journey deep-link format
+
+Every saved journey maps directly to a planner URL:
+
+```
+/planner.html?from=<from_station_id>&to=<to_station_id>
+```
+
+Opening this URL skips the station-picker and goes straight to the options screen with the route already planned. The URL is also what the **Share** button copies to the clipboard (or passes to the Web Share API on mobile), so you can share any trip — saved or not — as a link.
+
+<Tip>
+  You don't need an account to use deep-links as bookmarks. Bookmark or share `/planner.html?from=<from_station_id>&to=<to_station_id>` directly from your browser and it will re-plan the trip with live timing every time you open it — no sign-in required. An account is only needed if you want the same list of saved routes available across multiple devices.
+</Tip>

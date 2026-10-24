@@ -1,0 +1,96 @@
+---
+title: "Authentication in City Metro Trip Planner"
+sidebarTitle: "Overview"
+description: "City Metro Trip Planner uses OAuth 2.0 via Authentik. A Bearer token is stored in localStorage and sent in the Authorization header on every authenticated request."
+---
+
+City Metro Trip Planner is designed to be useful whether or not you have an account — the map, trip planner, live arrivals, and service advisories are all available anonymously. An account unlocks the ability to save journeys server-side so they're accessible across every device you travel with.
+
+## Public vs. authenticated endpoints
+
+Authentication is entirely optional for read-only access. The following endpoints respond to any request, with or without a token:
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /api/network` | Full network data — lines, stations, segments |
+| `GET /api/plan` | Trip planning between two stations |
+| `GET /api/live` | Live vehicle positions |
+| `GET /api/advisories` | Active service advisories |
+
+The following endpoints require a valid Bearer token:
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /api/journeys` | List saved journeys for the signed-in user |
+| `POST /api/journeys` | Save a new journey |
+| `DELETE /api/journeys/:id` | Delete a saved journey by ID |
+
+## The `Auth` object
+
+All authentication state is managed through the `Auth` object exported from `api.js`. It is a plain object — no class, no constructor — that reads from and writes to `localStorage` directly.
+
+```js
+import { Auth } from './api.js';
+
+// Read the raw token string (or null if not signed in)
+const token = Auth.token();            // localStorage.getItem('cm_token')
+
+// Read the parsed user object (or null)
+const user = Auth.user();              // JSON.parse(localStorage.getItem('cm_user'))
+
+// Store a token and user after a successful sign-in exchange
+Auth.set(data.token, data.user);       // sets cm_token + cm_user
+
+// Wipe both items (sign-out or expired session)
+Auth.clear();                          // removes cm_token + cm_user
+
+// Boolean getter — true when a token is present
+if (Auth.loggedIn) { /* ... */ }       // !!Auth.token()
+
+// Redirect to the Authentik sign-in flow, defaulting to the current page
+Auth.login('/planner.html');
+```
+
+### Method reference
+
+| Member | Signature | Description |
+|---|---|---|
+| `Auth.token()` | `() → string \| null` | Returns `localStorage.getItem('cm_token')` or `null` |
+| `Auth.user()` | `() → object \| null` | Parses `localStorage.getItem('cm_user')` as JSON; returns `null` on parse failure |
+| `Auth.set()` | `(token, user) → void` | Serialises and stores both items |
+| `Auth.clear()` | `() → void` | Removes `cm_token` and `cm_user` from `localStorage` |
+| `Auth.login()` | `(returnTo?) → void` | Redirects to the Worker's auth initiation URL; `returnTo` defaults to `location.pathname + location.search` |
+| `Auth.loggedIn` | getter `→ boolean` | Truthy when `token()` is non-null |
+
+## How the `api()` wrapper uses the token
+
+The `api()` function that all network requests flow through checks `Auth.token()` on every call and, if a token is present, injects an `Authorization` header automatically. You never need to set this header yourself:
+
+```js
+// Inside api.js — runs before every fetch
+const headers = { 'Content-Type': 'application/json', ...opts.headers };
+if (Auth.token()) headers.Authorization = `Bearer ${Auth.token()}`;
+```
+
+### Automatic session expiry handling
+
+If the server responds with HTTP `401` and the user was previously signed in, the `api()` wrapper calls `Auth.clear()` immediately — no redirect, no reload. The next `Auth.loggedIn` check will return `false` and the UI re-renders the sign-in prompt in place. This guard is skipped for requests to `/api/auth` paths to avoid a loop during the sign-in exchange itself:
+
+```js
+// Expired session — wipe credentials silently
+if (res.status === 401 && Auth.loggedIn && !path.startsWith('/api/auth')) Auth.clear();
+```
+
+## Account portal
+
+The Authentik account portal is available at:
+
+```
+https://auth.citymetro.xyz
+```
+
+This value is exported from `config.js` as `AUTH_ORIGIN` and is used to build the **Manage account** deep-link (`${AUTH_ORIGIN}/if/user/`) shown in the account dialog. Users can update their name, email, and connected apps there without leaving the City Metro ecosystem.
+
+<Note>
+  Tokens are stored client-side in `localStorage`, which is readable by any JavaScript running on the same origin. Always deploy City Metro Trip Planner exclusively over **HTTPS** — never serve it over plain HTTP — to prevent tokens being intercepted in transit. The Cloudflare Workers deployment satisfies this requirement automatically.
+</Note>

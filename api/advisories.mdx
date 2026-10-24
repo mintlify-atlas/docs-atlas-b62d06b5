@@ -1,0 +1,94 @@
+---
+title: "GET /api/advisories — service alerts for a transit line"
+sidebarTitle: "GET /api/advisories"
+description: "GET /api/advisories returns active service alerts for a specific City Metro line. Displayed in the line screen's Service Alerts section. No authentication required."
+---
+
+`GET /api/advisories` fetches the current list of service alerts for a given transit line. Alerts appear in the **Service Alerts** section at the bottom of every line screen, rendered as styled cards whose appearance is driven by the `severity` field. When there are no active alerts the endpoint returns an empty array and the UI shows "No active alerts."
+
+## Endpoint
+
+| Property   | Value                                                         |
+| ---------- | ------------------------------------------------------------- |
+| **Method** | `GET`                                                         |
+| **URL**    | `https://api.trip-planner.citymetro.xyz/api/advisories`       |
+| **Auth**   | None required                                                 |
+
+## Query parameters
+
+<ParamField query="line_id" type="string" required>
+  The identifier of the transit line whose alerts you want to retrieve. Must match a `line.id` value from `/api/network` — for example `"A"` for the A Line or `"720"` for the 720 Rapid. The value is URL-encoded before the request is sent (the client calls `encodeURIComponent(lineId)`).
+</ParamField>
+
+## Response
+
+The endpoint returns a **JSON array** of advisory objects. An empty array means there are no active service alerts for the requested line.
+
+<ResponseField name="title" type="string" required>
+  Short alert headline rendered in bold at the top of each advisory card (e.g. `"Track maintenance this weekend"`).
+</ResponseField>
+
+<ResponseField name="body" type="string" required>
+  Full alert text shown beneath the title. May contain multi-sentence descriptions, detour instructions, or date ranges.
+</ResponseField>
+
+<ResponseField name="severity" type="string" required>
+  A CSS class string applied directly to the advisory card element (`<div class="adv {severity}">`). Common values include `"warning"` and `"info"`, though the server may return others. Use the severity to visually distinguish disruptions from informational notices.
+</ResponseField>
+
+## When it is called
+
+`renderLineScreen()` in `linescreen.js` fires a single `api('/api/advisories?line_id=…')` call immediately after the line screen mounts. The result updates the `#lsAlerts` div in place — the rest of the screen is already visible while the fetch is in flight, so alerts load without blocking the stop list or vehicle board.
+
+<Note>
+  Advisories are fetched once per `renderLineScreen()` mount and are not automatically refreshed. If a user leaves the line screen and re-opens it, a fresh request is made.
+</Note>
+
+## Examples
+
+### curl
+
+```bash
+curl 'https://api.trip-planner.citymetro.xyz/api/advisories?line_id=A'
+```
+
+### JavaScript
+
+```js
+import { api } from './js/api.js';
+
+const alerts = await api('/api/advisories?line_id=A');
+
+if (alerts.length === 0) {
+  console.log('No active alerts');
+} else {
+  alerts.forEach(a => console.log(`[${a.severity}] ${a.title}: ${a.body}`));
+}
+```
+
+### Example response — active alerts
+
+```json
+[
+  {
+    "title": "Weekend track maintenance",
+    "body": "Trains will not stop at Little Tokyo/Arts District station Saturday 10 PM – Sunday 6 AM. Use free shuttle buses between Union Station and Pico.",
+    "severity": "warning"
+  },
+  {
+    "title": "Extended hours — New Year's Eve",
+    "body": "The A Line will run 24 hours on December 31. Expect increased crowding between 11 PM and 2 AM.",
+    "severity": "info"
+  }
+]
+```
+
+### Example response — no active alerts
+
+```json
+[]
+```
+
+<Tip>
+  The `severity` value maps directly to a CSS class on the advisory card. Consult the app's stylesheet for the full set of supported severity styles and their visual treatment (colour, icon, border).
+</Tip>

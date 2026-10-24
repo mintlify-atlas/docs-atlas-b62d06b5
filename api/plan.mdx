@@ -1,0 +1,192 @@
+---
+title: "GET /api/plan — compute multi-mode trip routes"
+sidebarTitle: "GET /api/plan"
+description: "GET /api/plan returns up to three routes between two stations: fastest, fewest transfers, and least walking. No authentication required."
+---
+
+`GET /api/plan` is the heart of the City Metro trip planner. Given an origin and destination station, it computes up to three alternative routes — the fastest overall, the one with the fewest transfers, and the one with the least walking — and returns them alongside a compact index of every transit line referenced in those routes.
+
+## Endpoint
+
+| Property   | Value                                                  |
+| ---------- | ------------------------------------------------------ |
+| **Method** | `GET`                                                  |
+| **URL**    | `https://api.trip-planner.citymetro.xyz/api/plan`      |
+| **Auth**   | None required                                          |
+
+## Query parameters
+
+<ParamField query="from_station" type="integer" required>
+  The numeric ID of the origin station, as returned in the `stations` array of `/api/network`.
+</ParamField>
+
+<ParamField query="to_station" type="integer" required>
+  The numeric ID of the destination station, as returned in the `stations` array of `/api/network`.
+</ParamField>
+
+## Response fields
+
+<ResponseField name="routes" type="object" required>
+  A map of the three routing modes to their computed route objects. Keys are always `fastest`, `fewest_transfers`, and `fewest_walking`.
+
+  <Expandable title="Route object fields">
+    <ResponseField name="found" type="boolean" required>
+      `true` when a valid route was found between the two stations; `false` when the stations are not connected (or when the planner exhausted its search). When `false`, all other fields on this route object should be ignored.
+    </ResponseField>
+
+    <ResponseField name="totalSeconds" type="number">
+      Total end-to-end journey time in seconds, including all ride legs, walk legs, and transfer penalties.
+    </ResponseField>
+
+    <ResponseField name="walkSeconds" type="number">
+      Total seconds spent walking across all walk legs in the route. Used to compute the "N min walking" summary badge.
+    </ResponseField>
+
+    <ResponseField name="transfers" type="number">
+      Number of transit-to-transit transfers in the route. A direct one-seat ride has `transfers: 0`.
+    </ResponseField>
+
+    <ResponseField name="same_as" type="string | null">
+      When the planner finds that this mode's optimal route is identical to another mode's route, `same_as` is set to that other mode's ID (e.g. `"fastest"`). The UI uses this to avoid showing duplicate cards. See the [note below](#same_as-deduplication).
+    </ResponseField>
+
+    <ResponseField name="legs" type="array">
+      Ordered list of leg objects that make up the journey. Each leg is either a transit ride or a walking segment.
+
+      <Expandable title="Leg object fields">
+        <ResponseField name="type" type="'ride' | 'walk'" required>
+          Distinguishes transit ride legs (`'ride'`) from pedestrian walk legs (`'walk'`).
+        </ResponseField>
+
+        <ResponseField name="line_id" type="string">
+          **Ride legs only.** The ID of the transit line (e.g. `"A"`, `"720"`). Matches a key in `routes.lines` and in `net.linesById`.
+        </ResponseField>
+
+        <ResponseField name="headsign" type="string">
+          **Ride legs only.** The destination headsign displayed on the vehicle — used to identify the correct direction of travel and to look up matching live vehicles.
+        </ResponseField>
+
+        <ResponseField name="from" type="object" required>
+          The station where this leg begins.
+          <Expandable title="from / to station fields">
+            <ResponseField name="id" type="number">Station ID.</ResponseField>
+            <ResponseField name="name" type="string">Station display name.</ResponseField>
+            <ResponseField name="x" type="number">Network coordinate x.</ResponseField>
+            <ResponseField name="y" type="number">Network coordinate y.</ResponseField>
+          </Expandable>
+        </ResponseField>
+
+        <ResponseField name="to" type="object" required>
+          The station where this leg ends. Same shape as `from`.
+        </ResponseField>
+
+        <ResponseField name="stops" type="array">
+          **Ride legs only.** All intermediate stations on this ride, including the boarding stop (`from`) at index 0 and the alighting stop (`to`) at the last index. The detail view uses `stops.slice(1, -1)` to render the collapsible intermediate-stop list.
+        </ResponseField>
+
+        <ResponseField name="seconds" type="number" required>
+          Scheduled duration of this leg in seconds.
+        </ResponseField>
+
+        <ResponseField name="miles" type="number">
+          **Walk legs only.** Distance of the walking segment in miles, shown as "0.2 mi" in the route guide.
+        </ResponseField>
+
+        <ResponseField name="points" type="array">
+          Array of `[x, y]` coordinate pairs tracing this leg's path in network coordinates. The map canvas renders ride legs as coloured polylines and walk legs as dotted paths from these points.
+        </ResponseField>
+      </Expandable>
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="lines" type="object" required>
+  A compact index of every transit line referenced by any leg in any route. Shape: `{ [line_id]: line }`. The planner page resolves line colours, names, and types from this object rather than requiring the full network to be loaded first.
+</ResponseField>
+
+## `same_as` deduplication
+
+<Note>
+  When two routing modes produce an identical sequence of legs, the server sets `same_as` on the duplicate to the canonical mode's ID. For example, if the fastest route and the fewest-transfers route are the same trip, `routes.fewest_transfers.same_as` will equal `"fastest"`. The app displays a "Same route as 'Fastest' — it's the best choice for this trip either way." note and does not render it as a separate alternative tab.
+</Note>
+
+## Examples
+
+### curl
+
+```bash
+curl 'https://api.trip-planner.citymetro.xyz/api/plan?from_station=1&to_station=42'
+```
+
+### JavaScript
+
+```js
+import { api } from './js/api.js';
+
+const plan = await api('/api/plan?from_station=1&to_station=42');
+const fastest = plan.routes.fastest;
+
+if (fastest.found) {
+  console.log('Travel time:', Math.round(fastest.totalSeconds / 60), 'min');
+  console.log('Transfers:', fastest.transfers);
+}
+```
+
+### Example response (abbreviated)
+
+```json
+{
+  "routes": {
+    "fastest": {
+      "found": true,
+      "totalSeconds": 1380,
+      "walkSeconds": 0,
+      "transfers": 1,
+      "same_as": null,
+      "legs": [
+        {
+          "type": "ride",
+          "line_id": "A",
+          "headsign": "Pasadena",
+          "from": { "id": 1, "name": "Union Station", "x": 412, "y": 308 },
+          "to":   { "id": 7, "name": "Civic Center", "x": 490, "y": 298 },
+          "stops": [
+            { "id": 1, "name": "Union Station", "x": 412, "y": 308 },
+            { "id": 4, "name": "Little Tokyo", "x": 451, "y": 304 },
+            { "id": 7, "name": "Civic Center", "x": 490, "y": 298 }
+          ],
+          "seconds": 720,
+          "points": [[412, 308], [451, 304], [490, 298]]
+        },
+        {
+          "type": "walk",
+          "from": { "id": 7, "name": "Civic Center", "x": 490, "y": 298 },
+          "to":   { "id": 12, "name": "Grand Park", "x": 496, "y": 302 },
+          "seconds": 180,
+          "miles": 0.07,
+          "points": [[490, 298], [496, 302]]
+        }
+      ]
+    },
+    "fewest_transfers": {
+      "found": true,
+      "totalSeconds": 1560,
+      "walkSeconds": 240,
+      "transfers": 0,
+      "same_as": null,
+      "legs": []
+    },
+    "fewest_walking": {
+      "found": true,
+      "totalSeconds": 1380,
+      "walkSeconds": 0,
+      "transfers": 1,
+      "same_as": "fastest",
+      "legs": []
+    }
+  },
+  "lines": {
+    "A": { "id": "A", "name": "A Line", "color": "#0057b8", "text_color": "#ffffff", "type": "rail" }
+  }
+}
+```

@@ -1,0 +1,172 @@
+---
+title: "Journeys API: save and manage trips with your account"
+sidebarTitle: "Journeys"
+description: "The /api/journeys endpoints let authenticated City Metro users save, retrieve, and delete journeys. All three require a Bearer token in the Authorization header."
+---
+
+The Journeys API lets signed-in City Metro users persist their favourite trips across devices. A saved journey records two station IDs and two display names — enough to relaunch the planner directly from a tapped row. All three endpoints share the same base path (`/api/journeys`) and all three require the caller to present a valid Bearer token.
+
+## Authentication
+
+Every request to `/api/journeys` must include an `Authorization` header:
+
+```
+Authorization: Bearer <token>
+```
+
+Tokens are issued through the City Metro OAuth flow backed by Authentik. See [OAuth flow](/auth/oauth-flow) for the full sign-in sequence. On the client, the `api()` helper in `api.js` reads the token from `localStorage` via `Auth.token()` and attaches the header automatically — you do not need to add it yourself when calling `api()`.
+
+<Warning>
+  A `401` response from any `/api/journeys` endpoint means the token has expired or been revoked. The app responds by calling `Auth.clear()`, which removes the token and user profile from `localStorage`, and then displays the sign-in form. If you are calling these endpoints directly, discard the stored token and re-run the OAuth flow to obtain a new one.
+</Warning>
+
+---
+
+## GET /api/journeys
+
+Returns all saved journeys for the authenticated user, ordered most-recently-saved first.
+
+| Property   | Value                                                         |
+| ---------- | ------------------------------------------------------------- |
+| **Method** | `GET`                                                         |
+| **URL**    | `https://api.trip-planner.citymetro.xyz/api/journeys`         |
+| **Auth**   | `Authorization: Bearer <token>`                               |
+
+### Response fields
+
+<ResponseField name="id" type="number" required>
+  Unique numeric journey ID. Pass this to `DELETE /api/journeys/:id` to remove the journey.
+</ResponseField>
+
+<ResponseField name="name" type="string" required>
+  Human-readable display name for the saved journey, typically formatted as `"From → To"` (e.g. `"Union Station → Pasadena"`).
+</ResponseField>
+
+<ResponseField name="from_station_id" type="number" required>
+  Numeric ID of the origin station. Matches `station.id` in `/api/network`.
+</ResponseField>
+
+<ResponseField name="to_station_id" type="number" required>
+  Numeric ID of the destination station. Matches `station.id` in `/api/network`.
+</ResponseField>
+
+---
+
+## POST /api/journeys
+
+Saves a new journey to the authenticated user's account and returns the created journey object.
+
+| Property     | Value                                                         |
+| ------------ | ------------------------------------------------------------- |
+| **Method**   | `POST`                                                        |
+| **URL**      | `https://api.trip-planner.citymetro.xyz/api/journeys`         |
+| **Auth**     | `Authorization: Bearer <token>`                               |
+| **Body**     | `application/json`                                            |
+
+### Request body
+
+<ParamField body="from_station_id" type="number" required>
+  Numeric ID of the origin station.
+</ParamField>
+
+<ParamField body="to_station_id" type="number" required>
+  Numeric ID of the destination station.
+</ParamField>
+
+<ParamField body="from_name" type="string" required>
+  Display name of the origin station (e.g. `"Union Station"`). Stored as-is and used to build the journey's `name` field without requiring an additional network lookup.
+</ParamField>
+
+<ParamField body="to_name" type="string" required>
+  Display name of the destination station (e.g. `"Pasadena"`).
+</ParamField>
+
+### Response
+
+Returns the newly created journey object with the same shape as the items in the `GET /api/journeys` response, including the assigned `id`.
+
+---
+
+## DELETE /api/journeys/:id
+
+Deletes a saved journey by its ID.
+
+| Property       | Value                                                         |
+| -------------- | ------------------------------------------------------------- |
+| **Method**     | `DELETE`                                                      |
+| **URL**        | `https://api.trip-planner.citymetro.xyz/api/journeys/:id`     |
+| **Auth**       | `Authorization: Bearer <token>`                               |
+| **Success**    | `204 No Content` — empty response body                        |
+
+### Path parameter
+
+| Parameter | Type   | Description                                                       |
+| --------- | ------ | ----------------------------------------------------------------- |
+| `id`      | number | The `id` of the journey to delete, as returned by `GET /api/journeys` or `POST /api/journeys`. |
+
+---
+
+## Complete JavaScript example
+
+```js
+import { api, Auth } from './js/api.js';
+
+// List saved journeys
+const journeys = await api('/api/journeys');
+
+// Save a new journey
+const saved = await api('/api/journeys', {
+  method: 'POST',
+  body: JSON.stringify({
+    from_station_id: 1,
+    to_station_id: 42,
+    from_name: 'Union Station',
+    to_name: 'Pasadena'
+  })
+});
+
+// Delete a journey
+await api(`/api/journeys/${saved.id}`, { method: 'DELETE' });
+```
+
+<Note>
+  The `api()` helper automatically attaches the `Content-Type: application/json` header and the `Authorization: Bearer <token>` header (when a token is present in `localStorage`) on every call — you do not need to set these manually.
+</Note>
+
+## Example responses
+
+### GET /api/journeys
+
+```json
+[
+  {
+    "id": 7,
+    "name": "Union Station → Pasadena",
+    "from_station_id": 1,
+    "to_station_id": 42
+  },
+  {
+    "id": 3,
+    "name": "Culver City → Downtown",
+    "from_station_id": 18,
+    "to_station_id": 5
+  }
+]
+```
+
+### POST /api/journeys — created journey
+
+```json
+{
+  "id": 8,
+  "name": "Union Station → Pasadena",
+  "from_station_id": 1,
+  "to_station_id": 42
+}
+```
+
+### DELETE /api/journeys/:id
+
+```
+HTTP/1.1 204 No Content
+```

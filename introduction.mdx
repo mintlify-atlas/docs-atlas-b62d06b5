@@ -1,0 +1,107 @@
+---
+title: "City Metro Trip Planner: mobile-first transit planning"
+sidebarTitle: "Introduction"
+description: "City Metro Trip Planner is a canvas-based transit web app that shows live vehicles, plans multi-leg routes, and saves journeys — deployed on Cloudflare Workers."
+---
+
+City Metro Trip Planner is a fully deployed, production web application for the City Metro transit network. It gives riders an interactive canvas map of the entire network, real-time vehicle positions, step-by-step multi-leg journey planning, and the ability to save trips to their account — all from a mobile-first UI that ships as a zero-dependency static site on Cloudflare Workers.
+
+<Note>
+  The live backend API at `https://api.trip-planner.citymetro.xyz` is operated by City Metro. It is not publicly writable — read-only endpoints (`/api/network`, `/api/plan`, `/api/live`) are open to any client, but journey-saving and account features require a Bearer token issued by City Metro's Authentik identity provider at `https://auth.citymetro.xyz`.
+</Note>
+
+## The two main pages
+
+The app is two HTML pages served from the `pages/` directory:
+
+| Page | URL | Purpose |
+|---|---|---|
+| `pages/index.html` | `/` | Live canvas map, nearby services, station arrivals |
+| `pages/planner.html` | `/planner` | Origin-to-destination trip planner with route modes |
+
+`index.html` boots `js/map-page.js` as an ES module. `planner.html` boots `js/planner-page.js`. Both pages share the same `css/app.css` stylesheet and pull all data from the single API base.
+
+## API base
+
+Every network request is rooted at one constant defined in `js/config.js`:
+
+```js
+export const API_BASE = 'https://api.trip-planner.citymetro.xyz';
+```
+
+All JavaScript modules import `API_BASE` from `config.js` — it is the only place the server address lives.
+
+## Tech stack
+
+City Metro Trip Planner is built entirely from standard web platform primitives:
+
+- **Vanilla ES modules** — no bundler, no framework, no build step. The browser loads each `.js` file directly.
+- **HTML Canvas** — the transit map and route visualisation are drawn on a `<canvas>` element, not a third-party map library.
+- **Cloudflare Workers static assets** — `wrangler deploy` publishes the `pages/` directory as a Workers static site. There is no server-side rendering.
+
+## Key modules
+
+| Module | Role |
+|---|---|
+| `js/config.js` | `API_BASE`, `VEHICLE_ICONS`, `MODES`, `AUTH_ORIGIN`, feature flags |
+| `js/api.js` | `Auth` object, `api()` fetch wrapper, `loadNetwork()`, `refreshVehicles()` |
+| `js/map-page.js` | Entry point for the map page — wires canvas, sidebar, and live polling |
+| `js/planner-page.js` | Entry point for the trip planner — manages origin/destination flow |
+| `js/arrivals.js` | Departure board and next-vehicle logic |
+| `js/ui.js` | Shared UI helpers (toasts, spinners, panel state) |
+| `js/mapview.js` | Pan/zoom state and hit-testing for the canvas map |
+| `js/linescreen.js` | Line detail screen (stops list, live board, alerts) |
+| `js/vehiclesheet.js` | Bottom-sheet for a single live vehicle |
+| `js/canvas.js` | Low-level canvas drawing primitives (lines, station chips, vehicle icons) |
+
+## Authentication and the `api()` wrapper
+
+Authentication state is managed entirely in `localStorage` through the `Auth` object exported from `js/api.js`:
+
+```js
+export const Auth = {
+  token: () => localStorage.getItem('cm_token'),
+  user() { try { return JSON.parse(localStorage.getItem('cm_user')); } catch { return null; } },
+  set(token, user) { localStorage.setItem('cm_token', token); localStorage.setItem('cm_user', JSON.stringify(user)); },
+  clear() { localStorage.removeItem('cm_token'); localStorage.removeItem('cm_user'); },
+  login(returnTo = location.pathname + location.search) {
+    location.href = `${API_BASE}/api/auth/login?site=${encodeURIComponent(location.origin)}&return=${encodeURIComponent(returnTo)}`;
+  },
+  get loggedIn() { return !!this.token(); }
+};
+```
+
+`Auth.login()` starts an OAuth flow through `API_BASE + /api/auth/login`, which redirects back to `/auth-callback.html` after a successful sign-in. `Auth.clear()` is called automatically when the API returns a `401` on an already-authenticated request (expired session).
+
+Every network call goes through the `api()` wrapper, which attaches the Bearer token when present, throws a human-readable error on failure, and deserialises JSON automatically:
+
+```js
+export async function api(path, opts = {}) {
+  const headers = { 'Content-Type': 'application/json', ...opts.headers };
+  if (Auth.token()) headers.Authorization = `Bearer ${Auth.token()}`;
+  let res;
+  try { res = await fetch(API_BASE + path, { ...opts, headers }); }
+  catch { throw new Error('Cannot reach the City Metro server'); }
+  const data = await res.json().catch(() => ({}));
+  if (res.status === 401 && Auth.loggedIn && !path.startsWith('/api/auth')) Auth.clear();
+  if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
+  return data;
+}
+```
+
+## Explore further
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Clone the repo, run `wrangler dev`, and make your first live API call in under five minutes.
+  </Card>
+  <Card title="Map page" icon="map" href="/features/map">
+    How the canvas map renders the network, handles pan/zoom, and polls for live vehicles.
+  </Card>
+  <Card title="Trip planner" icon="route" href="/features/trip-planner">
+    The origin-to-destination planner, route modes, and multi-leg journey display.
+  </Card>
+  <Card title="Network API" icon="plug" href="/api/network">
+    Reference for `/api/network`, `/api/plan`, `/api/live`, and authentication endpoints.
+  </Card>
+</CardGroup>

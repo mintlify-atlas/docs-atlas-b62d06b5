@@ -1,0 +1,114 @@
+---
+title: "Deploying and configuring Cloudflare Workers"
+sidebarTitle: "Cloudflare Deploy"
+description: "City Metro Trip Planner deploys as Cloudflare Workers static assets via wrangler.toml. Covers local dev, production deploy, URL routing, and environment configuration."
+---
+
+City Metro Trip Planner is deployed as a Cloudflare Workers static-asset site. The entire `pages/` directory is uploaded to the Workers static asset store, and Cloudflare's edge network serves files directly — no origin server is involved for the front-end. The deployment is defined entirely in `wrangler.toml` at the project root, and managed with the [Wrangler CLI](https://developers.cloudflare.com/workers/wrangler/).
+
+## wrangler.toml
+
+```toml
+name = "mobiletripplanner-v3"
+compatibility_date = "2026-10-01"
+
+# Serves static files directly from your ./pages directory
+# pages/index.html     -> /
+# pages/css/app.css    -> /css/app.css
+# pages/js/map-page.js -> /js/map-page.js
+assets = { directory = "./pages", html_handling = "auto-trailing-slash" }
+```
+
+### Field reference
+
+| Field | Value | Description |
+|-------|-------|-------------|
+| `name` | `mobiletripplanner-v3` | The Workers project name as it appears in the Cloudflare dashboard. This is the identifier used when deploying — changing it creates a new project rather than updating the existing one. |
+| `compatibility_date` | `2026-10-01` | Locks the Workers runtime to a specific behaviour snapshot. Cloudflare uses this date to determine which runtime APIs and behaviours are active, so updates to the platform do not silently change how the Worker runs. |
+| `assets.directory` | `./pages` | The local directory Wrangler uploads as static files. Every file under `pages/` is served at a URL path relative to this root. |
+| `assets.html_handling` | `auto-trailing-slash` | Cloudflare automatically adds or removes trailing slashes on HTML file requests to avoid duplicate-content issues. For example, a request to `/planner/` is redirected to `/planner`, and `/planner` resolves to `pages/planner.html`. |
+
+## URL routing
+
+Cloudflare derives the public URL for each file directly from its path inside `pages/`. HTML files are served without their `.html` extension thanks to `auto-trailing-slash` handling.
+
+| File | URL |
+|------|-----|
+| `pages/index.html` | `/` |
+| `pages/planner.html` | `/planner` |
+| `pages/auth-callback.html` | `/auth-callback` |
+| `pages/css/app.css` | `/css/app.css` |
+| `pages/js/api.js` | `/js/api.js` |
+| `pages/img/logo.png` | `/img/logo.png` |
+
+## Local development
+
+<Steps>
+  <Step title="Install Wrangler">
+    Install the Wrangler CLI globally so it is available from any directory.
+
+    ```bash
+    npm install -g wrangler
+    ```
+  </Step>
+  <Step title="Authenticate with Cloudflare">
+    Run this once to link Wrangler to your Cloudflare account. It opens a browser window to complete the OAuth flow.
+
+    ```bash
+    wrangler login
+    ```
+  </Step>
+  <Step title="Start the local dev server">
+    This command serves `pages/` on port 8787, simulating the Workers asset routing locally. Changes to files in `pages/` are reflected immediately without restarting.
+
+    ```bash
+    wrangler dev
+    ```
+  </Step>
+</Steps>
+
+## Production deployment
+
+Once you have verified your changes locally, deploy to production with a single command:
+
+```bash
+wrangler deploy
+```
+
+This uploads all files from `pages/` to the Workers static asset store and routes all incoming requests through the Workers runtime using the settings in `wrangler.toml`.
+
+<Warning>
+  `wrangler deploy` publishes to production immediately — there is no staging step built into this command. Always verify your changes with `wrangler dev` first before running a production deploy.
+</Warning>
+
+## Using a different API server
+
+To point the front-end at a different backend — a local development server, a staging environment, or a self-hosted instance — edit the `API_BASE` constant in `config.js`:
+
+```js
+// config.js
+export const API_BASE = 'http://localhost:3000'; // change to your API
+```
+
+Then redeploy so the updated `config.js` is picked up by the Workers static asset store:
+
+```bash
+wrangler deploy
+```
+
+No other files need to change. Every `api()` call and the OAuth login redirect in `api.js` resolve their URLs at runtime by importing `API_BASE` from `config.js`.
+
+<Tip>
+  If you want per-pull-request preview environments with zero extra configuration, consider deploying with **Cloudflare Pages** instead. Cloudflare Pages integrates directly with GitHub and automatically builds and deploys a preview URL for every PR, making it straightforward to review front-end changes in isolation before merging to `main`.
+</Tip>
+
+## Security
+
+The Worker serves only static files; all dynamic logic — route planning, live vehicle data, authentication, and network data — lives in the backend API service. The attack surface of the Workers deployment itself is therefore limited to static file serving and Cloudflare's edge infrastructure.
+
+The security policy for this repository is maintained in `SECURITY.md`. Key points:
+
+- **Supported version:** only the latest deploy from the `main` branch receives security fixes. Older commits and branches are not supported.
+- **Out of scope:** third-party services the app depends on (Cloudflare, Noupe, HubSpot, Google, Oracle Cloud) are outside the scope of the bug-bounty policy.
+- **Reporting:** email vulnerabilities to **felix@citymetro.xyz** with full reproduction steps and potential impact. Do not open a public GitHub issue for security problems.
+- **Response timeline:** acknowledgement within 3 business days; status updates at least every 7 days while the report is under investigation.
